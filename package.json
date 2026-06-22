@@ -1,0 +1,13 @@
+{
+  "name": "keijiban",
+  "private": true,
+  "workspaces": ["frontend", "backend"],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\"",
+    "dev:api": "npm run dev --workspace=backend",
+    "dev:web": "npm run dev --workspace=frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
