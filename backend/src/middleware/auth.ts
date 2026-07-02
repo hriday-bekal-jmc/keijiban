@@ -1,10 +1,61 @@
 import jwt from 'jsonwebtoken'
+import crypto from 'crypto'
 import type { Request, Response, NextFunction } from 'express'
 import { env } from '../config/env.js'
 import type { AuthUser, RequestWithUser } from '../types.js'
 
-export function createToken(payload: AuthUser): string {
-  return jwt.sign(payload, env.jwtSecret, { expiresIn: 8 * 60 * 60 })
+// Access token: 15 minutes. Short enough that stale permissions (canPost, role)
+// expire quickly; refresh re-reads from DB so changes take effect within 15min.
+const ACCESS_TOKEN_TTL_SEC = 15 * 60
+
+// Refresh token: 7 days. Rotated on every use.
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+export function createAccessToken(payload: AuthUser): string {
+  return jwt.sign(payload, env.jwtSecret, {
+    algorithm: 'HS256',
+    expiresIn: ACCESS_TOKEN_TTL_SEC,
+  })
+}
+
+/** Returns { plaintext, hash, expiresAt } — store hash in DB, send plaintext to client. */
+export function createRefreshTokenValue(): {
+  plaintext: string
+  hash: string
+  expiresAt: Date
+} {
+  const plaintext = crypto.randomBytes(32).toString('hex')
+  const hash = crypto.createHash('sha256').update(plaintext).digest('hex')
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS)
+  return { plaintext, hash, expiresAt }
+}
+
+export function hashRefreshToken(plaintext: string): string {
+  return crypto.createHash('sha256').update(plaintext).digest('hex')
+}
+
+export function setAccessCookie(res: Response, token: string): void {
+  res.cookie('session', token, {
+    httpOnly: true,
+    secure: !env.isDev,
+    sameSite: 'strict',
+    maxAge: ACCESS_TOKEN_TTL_SEC * 1000,
+  })
+}
+
+export function setRefreshCookie(res: Response, token: string): void {
+  res.cookie('refresh_token', token, {
+    httpOnly: true,
+    secure: !env.isDev,
+    sameSite: 'strict',
+    maxAge: REFRESH_TOKEN_TTL_MS,
+    path: '/api/auth',  // only sent to auth endpoints, not every API call
+  })
+}
+
+export function clearAuthCookies(res: Response): void {
+  res.clearCookie('session', { path: '/' })
+  res.clearCookie('refresh_token', { path: '/api/auth' })
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
@@ -15,11 +66,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
 
   try {
-    (req as RequestWithUser).user = jwt.verify(token, env.jwtSecret) as AuthUser
+    (req as RequestWithUser).user = jwt.verify(token, env.jwtSecret, {
+      algorithms: ['HS256'],
+    }) as AuthUser
     next()
   } catch {
-    res.clearCookie('session')
-    res.status(401).json({ error: 'Session expired' })
+    // Do NOT clear the refresh_token cookie here — client will use it to refresh.
+    res.status(401).json({ error: 'Token expired' })
   }
 }
 

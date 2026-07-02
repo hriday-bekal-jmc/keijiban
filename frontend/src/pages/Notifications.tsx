@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { api } from '../lib/api'
 import { NotificationSkeleton } from '../components/Skeletons'
+import { initials as initialsOf } from '../lib/postMeta'
 import type { Notification } from '../types'
 
 const AVATAR_COLORS = ['#7A5C30', '#C05A18', '#1E5FA8', '#1A7A48', '#6B35A8']
@@ -110,7 +111,7 @@ export default function Notifications() {
           {notifications.map((n: Notification, i: number) => {
             const isUnread = !n.read_at
             const color = AVATAR_COLORS[i % AVATAR_COLORS.length]
-            const initials = n.actor_name?.split(' ').map((c: string) => c[0]).join('').slice(0, 2).toUpperCase() ?? '?'
+            const initials = initialsOf(n.actor_name)
             const labelFn = TYPE_LABEL[n.type as NotificationType] ?? TYPE_LABEL.NEW_POST
             const icon = TYPE_ICON[n.type as NotificationType] ?? '🔔'
 

@@ -1,32 +1,31 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, lazy, Suspense } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Bookmark } from 'lucide-react'
+import { Bookmark, Heart, MessageSquare } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { stripMarkdown } from '../lib/markdown'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
+import { postTypeMeta, initials as initialsOf, patchPostCaches, useAddComment } from '../lib/postMeta'
 import CommentsPanel from './CommentsPanel'
+import ViewersModal from './ViewersModal'
 import { UserHoverCard } from './UserHoverCard'
+
+// Lazy — keeps tiptap out of the main bundle (only loads when editing)
+const PostComposer = lazy(() => import('./PostComposer'))
+import { colorFor } from '../lib/colors'
 import type { Post, Attachment } from '../types'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-const TYPE_CONFIG = {
-  ANNOUNCEMENT: { bg: '#FDE8D0', color: '#B84A0E', label: '📢 お知らせ' },
-  KNOWLEDGE:    { bg: '#D8EAF8', color: '#1E5FA8', label: '📚 ナレッジ' },
-  DAILY_REPORT: { bg: '#D6F0E4', color: '#1A7A48', label: '📊 日報' },
-  CHAT:         { bg: '#F0E8F8', color: '#6B35A8', label: '💬 雑談' },
-  DEPARTMENT:   { bg: '#E8F0E0', color: '#2E6818', label: '🏢 部署' },
-}
 
 interface TypeBadgeProps {
   type: string
 }
 
 function TypeBadge({ type }: TypeBadgeProps) {
-  const { bg, color, label } = TYPE_CONFIG[type as keyof typeof TYPE_CONFIG] ?? TYPE_CONFIG.CHAT
+  const { bg, color, label } = postTypeMeta(type)
   return (
     <span
       className="text-[9.5px] font-extrabold px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0"
@@ -46,7 +45,7 @@ interface InitialAvatarProps {
 }
 
 function InitialAvatar({ name, avatarUrl, color = 'linear-gradient(135deg, #E8732A, #F5A460)', size = 36, ring = true }: InitialAvatarProps) {
-  const initials = name?.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() ?? '?'
+  const initials = initialsOf(name)
 
   if (avatarUrl) {
     return (
@@ -85,32 +84,14 @@ function InitialAvatar({ name, avatarUrl, color = 'linear-gradient(135deg, #E873
   )
 }
 
-interface HeartIconProps {
-  filled: boolean
-  size?: number
+// Heart/comment icons come from lucide (identical paths to the previous
+// hand-rolled SVGs); the 3-dot menu keeps its slightly larger filled dots.
+function HeartIcon({ filled, size = 23 }: { filled: boolean; size?: number }) {
+  return <Heart size={size} strokeWidth={2} fill={filled ? '#E8732A' : 'none'} color={filled ? '#E8732A' : '#3A2A1A'} />
 }
 
-function HeartIcon({ filled, size = 23 }: HeartIconProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24"
-      fill={filled ? '#E8732A' : 'none'}
-      stroke={filled ? '#E8732A' : '#3A2A1A'}
-      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-    </svg>
-  )
-}
-
-interface CommentIconProps {
-  size?: number
-}
-
-function CommentIcon({ size = 22 }: CommentIconProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#3A2A1A" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  )
+function CommentIcon({ size = 22 }: { size?: number }) {
+  return <MessageSquare size={size} strokeWidth={2} color="#3A2A1A" />
 }
 
 interface DotsIconProps {
@@ -125,25 +106,15 @@ function DotsIcon({ size = 16 }: DotsIconProps) {
   )
 }
 
-// Image-post gradient backgrounds (cycles through warm gradients for posts without real images)
-const IMG_GRADIENTS = [
-  'linear-gradient(145deg, #F5A460 0%, #E8732A 100%)',
-  'linear-gradient(145deg, #E8C87A 0%, #D4A030 100%)',
-  'linear-gradient(145deg, #A8D8C0 0%, #5A9E80 100%)',
-  'linear-gradient(145deg, #B8C8E8 0%, #6080C0 100%)',
-  'linear-gradient(145deg, #E8B8D0 0%, #C07090 100%)',
-]
-
 // ── PostCard ──────────────────────────────────────────────────────────────────
 
 interface PostCardProps {
   post: Post
   viewMode: 'scroll' | 'board'
-  idx?: number
   onRead?: (id: string) => void
 }
 
-export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardProps) {
+export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
@@ -156,12 +127,32 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
     const existingBg = (location.state as { background?: unknown } | null)?.background
     navigate(`/posts/${post.id}`, { state: { background: existingBg ?? location } })
   }
+
+  // Warm both the detail data and the lazy PostDetail chunk on hover so the
+  // modal opens instantly on click.
+  const prefetchDetail = () => {
+    void import('../pages/PostDetail')
+    void queryClient.prefetchQuery({
+      queryKey: ['post', post.id],
+      queryFn: () => api.get(`/posts/${post.id}`),
+      staleTime: 30_000,
+    })
+  }
   const [liked, setLiked] = useState<boolean>(post.liked_by_me)
   const [likesCount, setLikesCount] = useState<number>(Number(post.likes_count))
   const [bookmarked, setBookmarked] = useState<boolean>(post.is_bookmarked_by_me ?? false)
   const [commentsOpen, setCommentsOpen] = useState<boolean>(false)
   const [commentDraft, setCommentDraft] = useState<string>('')
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
+  const [viewersOpen, setViewersOpen] = useState<boolean>(false)
+  const [editOpen, setEditOpen] = useState<boolean>(false)
+  const [editedPost, setEditedPost] = useState<Post>(post)
+
+  // Keep editedPost in sync when React Query delivers fresh post data
+  useEffect(() => {
+    if (!editOpen) setEditedPost(post)
+  }, [post, editOpen])
+
   const [heartKey, setHeartKey] = useState<number>(0)
   const [showHeart, setShowHeart] = useState<boolean>(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -224,32 +215,10 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
     return () => document.removeEventListener('mousedown', handler)
   }, [menuOpen])
 
-  const addComment = useMutation({
-    mutationFn: (content: string) => api.post(`/posts/${post.id}/comments`, { content }),
-    onMutate: async (content: string) => {
-      await queryClient.cancelQueries({ queryKey: ['comments', post.id] })
-      const optimistic = {
-        id: `opt-${Date.now()}`,
-        content,
-        created_at: new Date().toISOString(),
-        author_name: user?.full_name,
-      }
-      queryClient.setQueryData(['comments', post.id], (old: any) => ({
-        comments: [...(old?.comments ?? []), optimistic],
-      }))
-      setCommentDraft('')
-    },
-    onSuccess: () => {
-      toast.success('コメントを送信しました')
-    },
-    onError: () => {
-      toast.error('コメントの送信に失敗しました')
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['comments', post.id] })
-      queryClient.invalidateQueries({ queryKey: ['posts'] })
-      queryClient.invalidateQueries({ queryKey: ['profile-stats'] })
-    },
+  const addComment = useAddComment(post.id, {
+    onClear: () => setCommentDraft(''),
+    onSuccess: () => toast.success('コメントを送信しました'),
+    onError: () => toast.error('コメントの送信に失敗しました'),
   })
 
   const submitInlineComment = () => {
@@ -261,27 +230,8 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
   const hasImage = imageAttachments.length > 0
   const fileAttachments: Attachment[] = post.attachments?.filter(a => !a.thumbnail_path) ?? []
 
-  const patchFeedLike = (nextLiked: boolean, count: number) => {
-    const apply = (old: any) => {
-      if (!old?.pages) return old
-      return {
-        ...old,
-        pages: old.pages.map((page: any) => ({
-          ...page,
-          posts: page.posts.map((p: any) =>
-            p.id === post.id
-              ? { ...p, liked_by_me: nextLiked, likes_count: count }
-              : p
-          ),
-        })),
-      }
-    }
-    queryClient.setQueriesData({ queryKey: ['posts'] }, apply)
-    queryClient.setQueriesData({ queryKey: ['profile-posts'] }, (old: any) => {
-      if (!old?.posts) return old
-      return { ...old, posts: old.posts.map((p: any) => p.id === post.id ? { ...p, likes_count: count } : p) }
-    })
-  }
+  const patchFeedLike = (nextLiked: boolean, count: number) =>
+    patchPostCaches(queryClient, post.id, p => ({ ...p, liked_by_me: nextLiked, likes_count: count }))
 
   // mutationFn receives `next` explicitly — avoids stale closure where liked may have
   // been updated by a re-render between onMutate and mutationFn execution.
@@ -334,11 +284,19 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
     mutationFn: () => post.is_pinned
       ? api.delete(`/admin/posts/${post.id}/pin`)
       : api.post(`/admin/posts/${post.id}/pin`),
-    onSettled: () => {
+    onMutate: () => {
+      const next = !post.is_pinned
+      patchPostCaches(queryClient, post.id, p => ({ ...p, is_pinned: next }))
       setMenuOpen(false)
-      queryClient.invalidateQueries({ queryKey: ['posts'] })
     },
-    onError: () => toast.error('ピン留めに失敗しました'),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['posts'] })
+      queryClient.invalidateQueries({ queryKey: ['pinned-posts'] })
+    },
+    onError: () => {
+      patchPostCaches(queryClient, post.id, p => ({ ...p, is_pinned: post.is_pinned }))
+      toast.error('ピン留めに失敗しました')
+    },
   })
 
   const deleteMutation = useMutation({
@@ -352,12 +310,15 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
     onError: () => toast.error('削除に失敗しました'),
   })
 
+  const isEdited = new Date(editedPost.updated_at).getTime() - new Date(editedPost.created_at).getTime() > 60_000
+
   // ── SCROLL (Instagram) VIEW ──────────────────────────────────────────────
   if (viewMode === 'scroll') {
     return (
       <div
         className="mb-3.5 overflow-hidden"
-        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', borderRadius: 12 }}
+        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', borderRadius: 12, contain: 'layout', touchAction: 'pan-y' }}
+        onMouseEnter={prefetchDetail}
       >
         {/* Pinned banner */}
         {post.is_pinned && (
@@ -396,6 +357,15 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
                 className="absolute right-0 top-7 z-50 rounded-2xl overflow-hidden shadow-xl"
                 style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', minWidth: 160 }}
               >
+                {(user?.id === post.author_id || user?.role === 'admin') && (
+                  <button
+                    onClick={() => { setEditOpen(true); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2.5 px-4 py-3 text-[13px] font-semibold text-left hover:bg-[#FDE8D0] transition-colors"
+                    style={{ color: '#3A2A1A' }}
+                  >
+                    ✏️ 編集する
+                  </button>
+                )}
                 {user?.role === 'admin' && (
                   <button
                     onClick={() => pinMutation.mutate()}
@@ -484,11 +454,11 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
                 className="font-extrabold text-brand-dark mt-3.5 mb-2.5 leading-snug"
                 style={{ fontSize: 21, letterSpacing: '-0.4px' }}
               >
-                {post.title}
+                {editedPost.title}
               </h3>
-              {post.tags.length > 0 && (
+              {editedPost.tags.length > 0 && (
                 <div className="text-[12.5px] font-semibold" style={{ color: '#E8732A' }}>
-                  {post.tags.slice(0, 3).map(t => `#${t}`).join('  ')}
+                  {editedPost.tags.slice(0, 3).map(t => `#${t}`).join('  ')}
                 </div>
               )}
             </div>
@@ -496,20 +466,23 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
         )}
 
         {/* Action bar */}
-        <div className="flex items-center gap-3.5 px-3.5 pt-2.5 pb-1.5">
+        <div className="flex items-center gap-1 px-2 pt-1.5 pb-1">
           <button
             onClick={(e) => { e.stopPropagation(); likeMutation.mutate(!liked) }}
-            className="transition-transform active:scale-75"
+            className="flex items-center justify-center min-w-[44px] min-h-[44px] transition-transform active:scale-75"
           >
             <HeartIcon filled={liked} />
           </button>
-          <button onClick={(e) => { e.stopPropagation(); setCommentsOpen(true) }} className="transition-transform active:scale-75">
+          <button
+            onClick={(e) => { e.stopPropagation(); setCommentsOpen(true) }}
+            className="flex items-center justify-center min-w-[44px] min-h-[44px] transition-transform active:scale-75"
+          >
             <CommentIcon />
           </button>
           <div className="flex-1" />
           <button
             onClick={(e) => { e.stopPropagation(); bookmarkMutation.mutate(!bookmarked) }}
-            className="transition-transform active:scale-75"
+            className="flex items-center justify-center min-w-[44px] min-h-[44px] transition-transform active:scale-75"
           >
             <Bookmark
               size={21}
@@ -525,23 +498,70 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
           {likesCount} いいね
         </div>
 
+        {/* Viewer row — visible to all once at least 1 view */}
+        {Number(post.views_count) > 0 && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setViewersOpen(true) }}
+            className="flex items-center gap-2 px-3.5 pb-1.5 transition-opacity hover:opacity-70"
+          >
+            {/* Stacked avatars */}
+            <div className="flex items-center">
+              {(post.top_viewers ?? []).slice(0, 3).map((v, i) => (
+                <div
+                  key={v.id}
+                  className="rounded-full border-2 overflow-hidden flex-shrink-0"
+                  style={{
+                    width: 20, height: 20,
+                    marginLeft: i > 0 ? -6 : 0,
+                    zIndex: 3 - i,
+                    position: 'relative',
+                    borderColor: '#FFFDF7',
+                    background: colorFor(v.id),
+                  }}
+                >
+                  {v.avatar_url
+                    ? <img src={v.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    : null
+                  }
+                </div>
+              ))}
+            </div>
+            {/* Count label */}
+            <span className="text-[11.5px] font-semibold" style={{ color: '#A8906E' }}>
+              {Number(post.views_count) <= 3
+                ? `${post.views_count}人が閲覧`
+                : `and ${Number(post.views_count) - 3}+ more`
+              }
+            </span>
+          </button>
+        )}
+
+        {viewersOpen && createPortal(
+          <ViewersModal
+            postId={post.id}
+            totalViews={Number(post.views_count)}
+            onClose={() => setViewersOpen(false)}
+          />,
+          document.body
+        )}
+
         {/* Caption / body */}
         {hasImage ? (
           <>
             <div className="px-3.5 pb-1 text-[13px] text-brand-dark leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
               <span className="font-extrabold mr-1">{post.author_name}</span>
-              <span className="font-bold text-brand-mid mr-1">{post.title}</span>
+              <span className="font-bold text-brand-mid mr-1">{editedPost.title}</span>
               {(() => {
-                const txt = stripMarkdown(post.content)
+                const txt = stripMarkdown(editedPost.content)
                 const MAX = 100
                 return txt.length > MAX
                   ? <>{txt.slice(0, MAX)}… <button onClick={(e) => { e.stopPropagation(); goToPost() }} className="font-semibold" style={{ color: '#E8732A' }}>もっと見る</button></>
                   : txt
               })()}
             </div>
-            {post.tags.length > 0 && (
+            {editedPost.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 px-3.5 pb-1.5">
-                {post.tags.map(t => (
+                {editedPost.tags.map(t => (
                   <span key={t} onClick={(e) => { e.stopPropagation(); navigate(`/?tag=${encodeURIComponent(t)}`) }} className="text-[12.5px] font-semibold cursor-pointer hover:opacity-70 transition-opacity" style={{ color: '#4080D0' }}>#{t}</span>
                 ))}
               </div>
@@ -550,7 +570,7 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
         ) : (
           <>
             {(() => {
-              const txt = stripMarkdown(post.content)
+              const txt = stripMarkdown(editedPost.content)
               const MAX = 140
               const truncated = txt.length > MAX
               return (
@@ -562,9 +582,9 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
                 </div>
               )
             })()}
-            {post.tags.length > 0 && (
+            {editedPost.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 px-3.5 pb-2">
-                {post.tags.map(t => (
+                {editedPost.tags.map(t => (
                   <span key={t} onClick={(e) => { e.stopPropagation(); navigate(`/?tag=${encodeURIComponent(t)}`) }} className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full cursor-pointer hover:opacity-70 transition-opacity" style={{ background: '#F0E8D8', color: '#7A5C30' }}>#{t}</span>
                 ))}
               </div>
@@ -623,30 +643,43 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
           </button>
         </div>
 
-        {commentsOpen && (
+        {commentsOpen && createPortal(
           <CommentsPanel
             postId={post.id}
             postTitle={post.title}
             onClose={() => setCommentsOpen(false)}
-          />
+          />,
+          document.body
         )}
 
-        {/* Timestamp */}
-        <div className="px-3.5 pb-2.5 text-[10px] text-[#C0A880] uppercase tracking-wide">
-          {new Date(post.created_at).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })}
+        {/* Timestamp + edited indicator */}
+        <div className="px-3.5 pb-2.5 flex items-center gap-1.5 text-[10px] text-[#C0A880] uppercase tracking-wide">
+          {new Date(editedPost.created_at).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })}
+          {isEdited && <span style={{ color: '#A8906E' }}>· 編集済み</span>}
         </div>
+
+        {editOpen && createPortal(
+          <Suspense fallback={null}>
+            <PostComposer
+              editPost={editedPost}
+              onClose={() => setEditOpen(false)}
+              onSaved={(updated) => { setEditedPost(updated) }}
+            />
+          </Suspense>,
+          document.body
+        )}
       </div>
     )
   }
 
   // ── BOARD VIEW ───────────────────────────────────────────────────────────
-  const { bg: typeBg, color: typeColor } = TYPE_CONFIG[post.post_type] ?? TYPE_CONFIG.CHAT
   const isLiked = liked
 
   return (
     <div
       ref={cardRef}
       onClick={handleCardClick}
+      onMouseEnter={prefetchDetail}
       className="relative flex flex-col gap-2.5 cursor-pointer transition-shadow duration-200 hover:shadow-lg"
       style={{
         background: '#FFFDF7',
@@ -701,19 +734,19 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
       {/* Badges */}
       <div className="flex flex-wrap gap-1.5">
         <TypeBadge type={post.post_type} />
-        {post.tags.map(t => (
+        {editedPost.tags.map(t => (
           <span key={t} onClick={(e) => { e.stopPropagation(); navigate(`/?tag=${encodeURIComponent(t)}`) }} className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded-full cursor-pointer hover:opacity-70 transition-opacity" style={{ background: '#F0E8D8', color: '#7A5C30' }}>#{t}</span>
         ))}
       </div>
 
       {/* Title */}
       <h3 className="font-extrabold text-brand-dark leading-snug" style={{ fontSize: 14.5, letterSpacing: '-0.2px' }}>
-        {post.title}
+        {editedPost.title}
       </h3>
 
       {/* Preview */}
       <p className="text-[12.5px] text-brand-mid leading-relaxed line-clamp-3 flex-1">
-        {stripMarkdown(post.content)}
+        {stripMarkdown(editedPost.content)}
       </p>
 
       {/* Actions */}
@@ -742,12 +775,13 @@ export default function PostCard({ post, viewMode, idx = 0, onRead }: PostCardPr
         </button>
       </div>
 
-      {commentsOpen && (
+      {commentsOpen && createPortal(
         <CommentsPanel
           postId={post.id}
           postTitle={post.title}
           onClose={() => setCommentsOpen(false)}
-        />
+        />,
+        document.body
       )}
     </div>
   )

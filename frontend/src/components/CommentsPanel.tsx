@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { X } from 'lucide-react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
+import { initials as initialsOf, useAddComment } from '../lib/postMeta'
 import { UserHoverCard } from './UserHoverCard'
 import type { Comment } from '../types'
 
@@ -17,7 +18,7 @@ interface AvatarProps {
 }
 
 function Avatar({ name, avatarUrl, size = 28, idx = 0 }: AvatarProps) {
-  const initials = name?.split(' ').map(n => n[0]).join('').slice(0,2).toUpperCase() ?? '?'
+  const initials = initialsOf(name)
   if (avatarUrl) {
     return (
       <img src={avatarUrl} alt={name}
@@ -43,7 +44,6 @@ interface CommentsPanelProps {
 
 export default function CommentsPanel({ postId, postTitle, onClose }: CommentsPanelProps) {
   const { user } = useAuth()
-  const queryClient = useQueryClient()
   const inputRef = useRef<HTMLInputElement>(null)
   const [draft, setDraft] = useState<string>('')
 
@@ -61,42 +61,14 @@ export default function CommentsPanel({ postId, postTitle, onClose }: CommentsPa
   })
   const comments: Comment[] = data?.comments ?? []
 
-  const addComment = useMutation<unknown, Error, string>({
-    mutationFn: (content: string) => api.post(`/posts/${postId}/comments`, { content }),
-    onMutate: async (content: string) => {
-      await queryClient.cancelQueries({ queryKey: ['comments', postId] })
-      const optimistic = {
-        id: `opt-${Date.now()}`,
-        content,
-        created_at: new Date().toISOString(),
-        author_id: user?.id,
-        author_name: user?.full_name,
-        author_avatar: user?.avatar_url,
-      }
-      queryClient.setQueryData(['comments', postId], (old: any) => ({
-        comments: [...(old?.comments ?? []), optimistic],
-      }))
-      setDraft('')
-      return { optimistic }
-    },
-    onError: (_e: unknown, _v: unknown, ctx: any) => {
-      queryClient.setQueryData(['comments', postId], (old: any) => ({
-        comments: (old?.comments ?? []).filter((c: Comment) => c.id !== ctx?.optimistic?.id),
-      }))
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['comments', postId] })
-      queryClient.invalidateQueries({ queryKey: ['posts'] })
-      queryClient.invalidateQueries({ queryKey: ['profile-stats'] })
-    },
-  })
+  const addComment = useAddComment(postId, { onClear: () => setDraft('') })
 
   const submit = () => {
     if (!draft.trim() || addComment.isPending) return
     addComment.mutate(draft.trim())
   }
 
-  const initials = user?.full_name?.split(' ').map(n => n[0]).join('').slice(0,2).toUpperCase() ?? '?'
+  const initials = initialsOf(user?.full_name)
 
   return (
     <AnimatePresence>

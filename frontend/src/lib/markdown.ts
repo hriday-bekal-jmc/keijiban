@@ -3,16 +3,20 @@
 // blockquotes, bullet/ordered/checkbox lists (grouped), tables, HR, images,
 // markdown links [text](url), auto-detected bare URLs, @mention, color/size spans,
 // callout boxes (from WYSIWYG editor).
-// Pass `inlineMap` to resolve `inline:ID` markers in composer preview.
+// All visual styling lives in index.css under `.md-body` — output is class-based.
 
-const CALLOUT_RENDER_STYLES: Record<string, { bg: string; border: string; text: string; icon: string }> = {
-  info:    { bg: '#D8EAF8', border: '#1E5FA8', text: '#0F3060', icon: 'ℹ️' },
-  warning: { bg: '#FDE8D0', border: '#E8732A', text: '#7A2A00', icon: '⚠️' },
-  success: { bg: '#D6F0E4', border: '#1A7A48', text: '#0A3A20', icon: '✅' },
-  danger:  { bg: '#F8D8D8', border: '#A83030', text: '#5A0000', icon: '🚫' },
+import DOMPurify from 'dompurify'
+import { CALLOUT_STYLES } from './callouts'
+
+// Defense in depth: the renderer escapes everything itself, but its output is
+// injected via dangerouslySetInnerHTML — DOMPurify catches anything it misses.
+const SANITIZE_OPTS = {
+  ALLOWED_TAGS: ['div', 'span', 'a', 'img', 'strong', 'em', 's', 'mark', 'code', 'pre',
+    'ul', 'ol', 'li', 'table', 'tr', 'th', 'td', 'hr', 'br'],
+  ALLOWED_ATTR: ['class', 'style', 'href', 'src', 'alt', 'loading', 'target', 'rel', 'title'],
 }
 
-export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, string> }): string {
+export function renderMarkdown(raw: string): string {
   if (!raw) return ''
 
   // 0. Extract callout blocks (block-level HTML from WYSIWYG editor) before any processing.
@@ -20,13 +24,13 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
   const raw0 = raw.replace(
     /<div\s+class="kb-callout"\s+data-callout="([^"]+)"[^>]*>([\s\S]*?)<\/div>/g,
     (_m, type, content) => {
-      const c = CALLOUT_RENDER_STYLES[type] ?? CALLOUT_RENDER_STYLES.info
+      const c = CALLOUT_STYLES[type] ?? CALLOUT_STYLES.info
       const cleanText = content.replace(/<p>([\s\S]*?)<\/p>/g, '$1\n').replace(/<[^>]+>/g, '').trim()
       const idx = calloutSlots.length
       calloutSlots.push(
-        `<div style="background:${c.bg};border-left:4px solid ${c.border};border-radius:8px;padding:10px 14px;margin:8px 0;color:${c.text};display:flex;gap:8px;align-items:flex-start">`
-        + `<span style="flex-shrink:0;font-size:14px">${c.icon}</span>`
-        + `<span style="line-height:1.6">${cleanText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`
+        `<div class="md-callout" style="background:${c.bg};border-left-color:${c.border};color:${c.text}">`
+        + `<span class="md-callout-icon">${c.icon}</span>`
+        + `<span class="md-callout-text">${cleanText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`
         + `</div>`
       )
       return `\x00CALLOUT${idx}\x00`
@@ -54,13 +58,9 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
   // 2. Extract images BEFORE HTML-escaping so src URLs survive intact.
   const imgSlots: string[] = []
   const src0 = raw1.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, src) => {
-    const resolvedSrc = opts?.inlineMap?.get(src.replace(/^inline:/, '')) ?? src
-    const safeSrc = /^(\/|data:|https?:)/.test(resolvedSrc) ? resolvedSrc : '#'
+    const safeSrc = /^(\/|data:|https?:)/.test(src) ? src : '#'
     const idx = imgSlots.length
-    imgSlots.push(
-      `<img src="${safeSrc}" alt="${alt.replace(/"/g, '&quot;')}" `
-      + `style="max-width:100%;border-radius:10px;margin:10px 0;display:block;cursor:zoom-in" loading="lazy" />`
-    )
+    imgSlots.push(`<img class="md-img" src="${safeSrc}" alt="${alt.replace(/"/g, '&quot;')}" loading="lazy" />`)
     return `\x00IMG${idx}\x00`
   })
 
@@ -75,7 +75,7 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
 
   function flushList() {
     if (!listItems.length) return
-    out.push(`<${listTag} style="list-style:none;padding:0;margin:4px 0">${listItems.join('')}</${listTag}>`)
+    out.push(`<${listTag}>${listItems.join('')}</${listTag}>`)
     listTag = null; listItems = []
   }
 
@@ -86,15 +86,10 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
   function flushTable() {
     if (!tableRows.length) return
     const rows = tableRows.map((cells, i) => {
-      const isHdr = i === 0 && tableHasSep
-      const tag = isHdr ? 'th' : 'td'
-      const bg  = isHdr ? '#F0E8D8' : (i % 2 === 0 ? '#FFFDF7' : '#FAF5EC')
-      const fw  = isHdr ? '700' : '400'
-      return `<tr>${cells.map(c =>
-        `<${tag} style="padding:7px 12px;border:1px solid #E4D4B8;color:#3A2A1A;background:${bg};font-weight:${fw};text-align:left">${c}</${tag}>`
-      ).join('')}</tr>`
+      const tag = i === 0 && tableHasSep ? 'th' : 'td'
+      return `<tr>${cells.map(c => `<${tag}>${c}</${tag}>`).join('')}</tr>`
     }).join('')
-    out.push(`<div style="overflow-x:auto;margin:8px 0"><table style="border-collapse:collapse;width:100%;font-size:13px">${rows}</table></div>`)
+    out.push(`<div class="md-tablewrap"><table>${rows}</table></div>`)
     tableRows = []; tableHasSep = false
   }
 
@@ -108,23 +103,20 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<em>$1</em>')
       // strikethrough
-      .replace(/~~(.+?)~~/g, '<s style="color:#A8906E">$1</s>')
+      .replace(/~~(.+?)~~/g, '<s>$1</s>')
       // highlight
-      .replace(/==(.+?)==/g, '<mark style="background:#FEF08A;padding:0 2px;border-radius:2px;color:#713F12">$1</mark>')
+      .replace(/==(.+?)==/g, '<mark>$1</mark>')
       // inline code
-      .replace(/`([^`]+)`/g, '<code style="background:#F0E8D8;padding:1px 5px;border-radius:4px;font-size:0.88em;font-family:monospace">$1</code>')
-      // markdown links [text](url)
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
-        '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:#1E5FA8;text-decoration:underline;text-underline-offset:2px">$1</a>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      // markdown links [text](url) — encode " to prevent attribute injection
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_, text, url) =>
+        `<a href="${url.replace(/"/g, '%22')}" target="_blank" rel="noopener noreferrer">${text}</a>`)
       // auto-detect bare URLs (skip after " = > to avoid re-wrapping existing anchors)
       .replace(/(^|[^"=>])(https?:\/\/[^\s<>"]+)/g,
-        '$1<a href="$2" target="_blank" rel="noopener noreferrer" style="color:#1E5FA8;text-decoration:underline;text-underline-offset:2px">$2</a>')
+        '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
       // @mention
-      .replace(/@([\w぀-鿿]+)/g,
-        '<span style="color:#1E5FA8;font-weight:600;background:rgba(30,95,168,0.08);padding:0 3px;border-radius:4px">@$1</span>')
+      .replace(/@([\w぀-鿿]+)/g, '<span class="md-mention">@$1</span>')
   }
-
-  const LI_BASE = 'display:flex;gap:7px;align-items:flex-start;padding:2px 0'
 
   for (const line of lines) {
     // ── Code fence ───────────────────────────────────────────────────────────
@@ -133,7 +125,7 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
       if (!inCode) { inCode = true; codeLines = [] } else {
         inCode = false
         const esc = codeLines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')).join('\n')
-        out.push(`<pre style="background:#F4EDDA;border-radius:8px;padding:10px 14px;margin:8px 0;overflow-x:auto;font-size:12px;line-height:1.55;font-family:monospace"><code>${esc}</code></pre>`)
+        out.push(`<pre class="md-pre"><code>${esc}</code></pre>`)
       }
       continue
     }
@@ -147,26 +139,14 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
     }
 
     // ── Headings ─────────────────────────────────────────────────────────────
-    if (/^### /.test(l)) {
-      flushAll()
-      out.push(`<div style="font-size:13px;font-weight:800;color:#3A2A1A;margin:10px 0 2px;letter-spacing:-0.2px">${l.slice(4)}</div>`)
-      continue
-    }
-    if (/^## /.test(l)) {
-      flushAll()
-      out.push(`<div style="font-size:15px;font-weight:800;color:#3A2A1A;margin:12px 0 4px;letter-spacing:-0.3px">${l.slice(3)}</div>`)
-      continue
-    }
-    if (/^# /.test(l)) {
-      flushAll()
-      out.push(`<div style="font-size:17px;font-weight:900;color:#3A2A1A;margin:14px 0 4px;letter-spacing:-0.4px">${l.slice(2)}</div>`)
-      continue
-    }
+    if (/^### /.test(l)) { flushAll(); out.push(`<div class="md-h3">${l.slice(4)}</div>`); continue }
+    if (/^## /.test(l))  { flushAll(); out.push(`<div class="md-h2">${l.slice(3)}</div>`); continue }
+    if (/^# /.test(l))   { flushAll(); out.push(`<div class="md-h1">${l.slice(2)}</div>`); continue }
 
     // ── Blockquote ───────────────────────────────────────────────────────────
     if (/^&gt; /.test(l)) {
       flushAll()
-      out.push(`<div style="border-left:3px solid #E8732A;padding-left:10px;color:#7A5C30;font-style:italic;margin:4px 0">${l.slice(5)}</div>`)
+      out.push(`<div class="md-quote">${l.slice(5)}</div>`)
       continue
     }
 
@@ -174,11 +154,7 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
     if (/^- \[x\] /i.test(l)) {
       if (listTag === 'ol') flushList()
       listTag = 'ul'
-      listItems.push(
-        `<li style="${LI_BASE}">`
-        + `<span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;background:#16A34A;border-radius:3px;flex-shrink:0;margin-top:2px;color:white;font-size:9px;font-weight:900">✓</span>`
-        + `<span style="text-decoration:line-through;color:#A8906E;line-height:1.6">${l.slice(6)}</span></li>`
-      )
+      listItems.push(`<li><span class="md-check">✓</span><span class="md-done">${l.slice(6)}</span></li>`)
       continue
     }
 
@@ -186,11 +162,7 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
     if (/^- \[ \] /.test(l)) {
       if (listTag === 'ol') flushList()
       listTag = 'ul'
-      listItems.push(
-        `<li style="${LI_BASE}">`
-        + `<span style="display:inline-flex;width:15px;height:15px;border:1.5px solid #C4A87A;border-radius:3px;flex-shrink:0;margin-top:2px"></span>`
-        + `<span style="color:#3A2A1A;line-height:1.6">${l.slice(6)}</span></li>`
-      )
+      listItems.push(`<li><span class="md-uncheck"></span><span class="md-todo">${l.slice(6)}</span></li>`)
       continue
     }
 
@@ -198,11 +170,7 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
     if (/^- /.test(l)) {
       if (listTag === 'ol') flushList()
       listTag = 'ul'
-      listItems.push(
-        `<li style="${LI_BASE}">`
-        + `<span style="color:#E8732A;font-weight:900;flex-shrink:0;margin-top:1px;font-size:15px;line-height:1">•</span>`
-        + `<span style="line-height:1.6">${l.slice(2)}</span></li>`
-      )
+      listItems.push(`<li><span class="md-bullet">•</span><span class="md-t">${l.slice(2)}</span></li>`)
       continue
     }
 
@@ -211,11 +179,7 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
     if (olMatch) {
       if (listTag === 'ul') flushList()
       listTag = 'ol'
-      listItems.push(
-        `<li style="${LI_BASE}">`
-        + `<span style="color:#A8906E;font-weight:700;flex-shrink:0;min-width:20px;text-align:right;margin-top:1px;font-size:12px">${olMatch[1]}.</span>`
-        + `<span style="line-height:1.6">${olMatch[2]}</span></li>`
-      )
+      listItems.push(`<li><span class="md-num">${olMatch[1]}.</span><span class="md-t">${olMatch[2]}</span></li>`)
       continue
     }
 
@@ -234,28 +198,30 @@ export function renderMarkdown(raw: string, opts?: { inlineMap?: Map<string, str
     // ── Horizontal rule ──────────────────────────────────────────────────────
     if (l.trim() === '---' || l.trim() === '***') {
       flushAll()
-      out.push('<hr style="border:none;border-top:1px solid #E4D4B8;margin:10px 0"/>')
+      out.push('<hr/>')
       continue
     }
 
     // ── Blank line ───────────────────────────────────────────────────────────
     if (l.trim() === '') {
       flushAll()
-      out.push('<div style="height:6px"></div>')
+      out.push('<div class="md-sp"></div>')
       continue
     }
 
     // ── Paragraph ────────────────────────────────────────────────────────────
     flushAll()
-    out.push(`<div style="line-height:1.65">${l}</div>`)
+    out.push(`<div class="md-p">${l}</div>`)
   }
 
   flushAll()
 
-  return out.join('')
+  const html = out.join('')
     .replace(/\x00IMG(\d+)\x00/g, (_, i) => imgSlots[parseInt(i)] ?? '')
     .replace(/\x00SPAN(\d+)\x00/g, (_, i) => spanSlots[parseInt(i)] ?? '')
     .replace(/\x00CALLOUT(\d+)\x00/g, (_, i) => calloutSlots[parseInt(i)] ?? '')
+
+  return DOMPurify.sanitize(`<div class="md-body">${html}</div>`, SANITIZE_OPTS)
 }
 
 // Strip markdown for plain-text previews (PostCard snippets etc.)

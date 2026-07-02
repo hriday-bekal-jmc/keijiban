@@ -1,24 +1,24 @@
 import { Router, Request, Response, NextFunction } from 'express'
-import { query, pool } from '../config/db.js'
+import { query, pool, visibilitySQL, UUID_RE, logAudit } from '../config/db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sseManager } from '../services/sse.js'
+import { postCreateLimiter } from '../middleware/rateLimits.js'
 import type { RequestWithUser } from '../types.js'
 
 const router = Router()
 
-// Visibility filter used in all post queries — single chokepoint per §3.4
-const visibilitySQL = `(
-  p.visibility_scope = 'COMPANY_WIDE'
-  OR EXISTS (
-    SELECT 1 FROM post_departments pd
-    WHERE pd.post_id = p.id AND pd.department_id = $2
-  )
-  OR p.author_id = $1
-)`
+const VALID_POST_TYPES       = new Set(['ANNOUNCEMENT', 'KNOWLEDGE', 'DAILY_REPORT', 'CHAT', 'DEPARTMENT'])
+const VALID_VISIBILITY_SCOPES = new Set(['COMPANY_WIDE', 'DEPARTMENT'])
+const MAX_TITLE_LEN   = 200
+const MAX_TAG_LEN     = 50
+const MAX_TAGS        = 10
+// Notification INSERT uses 3 fixed params + 1 per recipient.
+// Keep each batch well under PostgreSQL's 65535-parameter limit.
+const NOTIFICATION_BATCH_SIZE = 500
+
 
 // No GROUP BY: correlated subqueries for counts avoid the N×M fan-out that
 // LEFT JOIN likes × LEFT JOIN comments creates when posts have many engagements.
-// Each subquery does a single PK/index scan per row instead of a cross-join.
 const postSelectSQL = `
   SELECT
     p.id, p.title, p.content, p.post_type, p.visibility_scope,
@@ -31,6 +31,16 @@ const postSelectSQL = `
     (SELECT COUNT(*)::int FROM comments WHERE post_id = p.id AND deleted_at IS NULL) AS comments_count,
     EXISTS(SELECT 1 FROM likes     WHERE post_id = p.id AND user_id = $1) AS liked_by_me,
     EXISTS(SELECT 1 FROM bookmarks WHERE post_id = p.id AND user_id = $1) AS is_bookmarked_by_me,
+    (SELECT COUNT(*)::int FROM post_views WHERE post_id = p.id)            AS views_count,
+    (SELECT COALESCE(json_agg(v ORDER BY v.viewed_at DESC), '[]'::json)
+     FROM (
+       SELECT uv.id, uv.avatar_url, pv2.viewed_at
+       FROM post_views pv2
+       JOIN users uv ON uv.id = pv2.user_id
+       WHERE pv2.post_id = p.id
+       ORDER BY pv2.viewed_at DESC
+       LIMIT 3
+     ) v)                                                                  AS top_viewers,
     (SELECT COALESCE(
       json_agg(json_build_object(
         'id',             att.id,
@@ -54,8 +64,16 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     const { id: userId, departmentId } = (req as RequestWithUser).user
     const pageSize = Math.min(parseInt(limit ?? '15') || 15, 50)
 
+    // Validate optional query filters
+    if (type && !VALID_POST_TYPES.has(type.toUpperCase())) {
+      return res.status(400).json({ error: 'Invalid post type' })
+    }
+    if (q && q.trim().length > 200) {
+      return res.status(400).json({ error: 'Search query too long' })
+    }
+
     const params: unknown[] = [userId, departmentId, pageSize]
-    const conditions: string[] = [`p.deleted_at IS NULL`, visibilitySQL]
+    const conditions: string[] = [`p.deleted_at IS NULL`, visibilitySQL(1, 2)]
 
     if (cursor_created_at && cursor_id) {
       params.push(cursor_created_at, cursor_id)
@@ -97,7 +115,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 })
 
 // POST /api/posts
-router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, postCreateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       title, content, post_type, visibility_scope,
@@ -107,8 +125,8 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       content?: string
       post_type?: string
       visibility_scope?: string
-      tags?: string[]
-      department_ids?: string[]
+      tags?: unknown
+      department_ids?: unknown
       event_date?: string | null
     }
 
@@ -119,6 +137,31 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     if (!title?.trim() || !content?.trim()) {
       return res.status(400).json({ error: 'Title and content required' })
     }
+    if (title.trim().length > MAX_TITLE_LEN) {
+      return res.status(400).json({ error: `Title must be ${MAX_TITLE_LEN} characters or less` })
+    }
+    const safeType  = (post_type ?? '').toUpperCase()
+    const safeScope = (visibility_scope ?? '').toUpperCase()
+    if (!VALID_POST_TYPES.has(safeType)) {
+      return res.status(400).json({ error: 'Invalid post_type' })
+    }
+    if (!VALID_VISIBILITY_SCOPES.has(safeScope)) {
+      return res.status(400).json({ error: 'Invalid visibility_scope' })
+    }
+
+    // Validate tags: must be array of short strings
+    if (!Array.isArray(tags)) return res.status(400).json({ error: 'tags must be an array' })
+    if ((tags as unknown[]).length > MAX_TAGS) return res.status(400).json({ error: `Maximum ${MAX_TAGS} tags allowed` })
+    const safeTags = (tags as unknown[]).map(t => String(t).trim()).filter(Boolean)
+    if (safeTags.some(t => t.length > MAX_TAG_LEN)) {
+      return res.status(400).json({ error: `Each tag must be ${MAX_TAG_LEN} characters or less` })
+    }
+
+    // Validate department_ids: must be array of UUIDs
+    if (!Array.isArray(department_ids)) return res.status(400).json({ error: 'department_ids must be an array' })
+    const safeDeptIds = (department_ids as unknown[]).map(d => String(d)).filter(id => UUID_RE.test(id))
+
+    const { id: authorId, departmentId } = (req as RequestWithUser).user
 
     const client = await pool.connect()
     try {
@@ -127,59 +170,67 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       const { rows } = await client.query(
         `INSERT INTO posts (author_id, title, content, post_type, visibility_scope, tags, event_date)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING *`,
-        [(req as RequestWithUser).user.id, title.trim(), content.trim(), post_type, visibility_scope, tags, event_date ?? null]
+         RETURNING id`,
+        [authorId, title.trim(), content.trim(), safeType, safeScope, safeTags, event_date ?? null]
       )
       const post = rows[0] as { id: string }
 
-      if (visibility_scope === 'DEPARTMENT' && department_ids.length > 0) {
-        for (const deptId of department_ids) {
-          await client.query(
-            'INSERT INTO post_departments (post_id, department_id) VALUES ($1, $2)',
-            [post.id, deptId]
-          )
-        }
+      // Batch INSERT post_departments (avoids N individual round-trips)
+      if (safeScope === 'DEPARTMENT' && safeDeptIds.length > 0) {
+        const placeholders = safeDeptIds.map((_, i) => `($1, $${i + 2})`).join(', ')
+        await client.query(
+          `INSERT INTO post_departments (post_id, department_id) VALUES ${placeholders}`,
+          [post.id, ...safeDeptIds]
+        )
       }
 
       // Fan-out notification rows
       let recipientRows: Array<{ id: string }>
-      if (visibility_scope === 'DEPARTMENT' && department_ids.length > 0) {
+      if (safeScope === 'DEPARTMENT' && safeDeptIds.length > 0) {
         const { rows: deptUsers } = await client.query(
           `SELECT id FROM users
            WHERE department_id = ANY($1::uuid[]) AND id != $2`,
-          [department_ids, (req as RequestWithUser).user.id]
+          [safeDeptIds, authorId]
         )
         recipientRows = deptUsers as Array<{ id: string }>
       } else {
         const { rows: allUsers } = await client.query(
           `SELECT id FROM users WHERE id != $1`,
-          [(req as RequestWithUser).user.id]
+          [authorId]
         )
         recipientRows = allUsers as Array<{ id: string }>
       }
 
-      if (recipientRows.length > 0) {
-        const values = recipientRows
-          .map((_, i) => `($1, $2, $${i + 3}, 'NEW_POST')`)
-          .join(', ')
+      // Batch notifications to stay under PostgreSQL's 65535-parameter limit
+      for (let i = 0; i < recipientRows.length; i += NOTIFICATION_BATCH_SIZE) {
+        const batch = recipientRows.slice(i, i + NOTIFICATION_BATCH_SIZE)
+        const values = batch.map((_, j) => `($1, $2, $${j + 3}, 'NEW_POST')`).join(', ')
         await client.query(
-          `INSERT INTO notifications (actor_id, post_id, user_id, type) VALUES ${values}`,
-          [(req as RequestWithUser).user.id, post.id, ...recipientRows.map(r => r.id)]
+          `INSERT INTO notifications (actor_id, post_id, user_id, type) VALUES ${values}
+           ON CONFLICT DO NOTHING`,
+          [authorId, post.id, ...batch.map(r => r.id)]
         )
       }
 
       await client.query(
         `INSERT INTO audit_log (actor_id, action, target_id, detail)
          VALUES ($1, 'POST_CREATE', $2, $3)`,
-        [(req as RequestWithUser).user.id, post.id,
-          JSON.stringify({ title: title.trim(), post_type, visibility_scope })]
+        [authorId, post.id, JSON.stringify({ title: title.trim(), post_type: safeType, visibility_scope: safeScope })]
       )
 
       await client.query('COMMIT')
 
-      sseManager.broadcastAll({ type: 'NEW_POST', postId: post.id })
+      // Re-fetch full post shape so client gets the same shape as GET /api/posts
+      const { rows: fullRows } = await query(
+        `${postSelectSQL} WHERE p.id = $3`,
+        [authorId, departmentId, post.id]
+      )
 
-      res.status(201).json({ post })
+      sseManager.broadcastAll({ type: 'NEW_POST', postId: post.id })
+      // Push badge update to all recipients
+      sseManager.broadcast(recipientRows.map(r => r.id), { type: 'NOTIFICATION' })
+
+      res.status(201).json({ post: fullRows[0] ?? { id: post.id } })
     } catch (err) {
       await client.query('ROLLBACK')
       throw err
@@ -197,12 +248,47 @@ router.get('/pinned', requireAuth, async (req: Request, res: Response, next: Nex
     const { id: userId, departmentId } = (req as RequestWithUser).user
     const { rows } = await query(
       `${postSelectSQL}
-       WHERE p.is_pinned = TRUE AND p.deleted_at IS NULL AND ${visibilitySQL}
-       GROUP BY p.id, u.id, d.name
+       WHERE p.is_pinned = TRUE AND p.deleted_at IS NULL AND ${visibilitySQL(1, 2)}
        ORDER BY p.pinned_at DESC`,
       [userId, departmentId]
     )
     res.json({ posts: rows })
+  } catch (err) { next(err) }
+})
+
+// POST /api/posts/:id/view — idempotent; author's own views silently ignored
+router.post('/:id/view', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!UUID_RE.test(req.params.id as string)) return res.status(400).json({ error: 'Invalid post ID' })
+    const { id: userId } = (req as RequestWithUser).user
+    await query(
+      `INSERT INTO post_views (post_id, user_id)
+       SELECT $1::uuid, $2::uuid
+       WHERE EXISTS(
+         SELECT 1 FROM posts WHERE id = $1::uuid AND deleted_at IS NULL AND author_id != $2::uuid
+       )
+       ON CONFLICT DO NOTHING`,
+      [req.params.id, userId]
+    )
+    res.json({ ok: true })
+  } catch (err) { next(err) }
+})
+
+// GET /api/posts/:id/views — viewer list with liked/commented flags; all authenticated users
+router.get('/:id/views', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!UUID_RE.test(req.params.id as string)) return res.status(400).json({ error: 'Invalid post ID' })
+    const { rows } = await query(
+      `SELECT u.id, u.full_name, u.avatar_url, pv.viewed_at,
+              EXISTS(SELECT 1 FROM likes    WHERE post_id = $1 AND user_id = pv.user_id)                       AS liked,
+              EXISTS(SELECT 1 FROM comments WHERE post_id = $1 AND user_id = pv.user_id AND deleted_at IS NULL) AS commented
+       FROM post_views pv
+       JOIN users u ON u.id = pv.user_id
+       WHERE pv.post_id = $1
+       ORDER BY pv.viewed_at DESC`,
+      [req.params.id]
+    )
+    res.json({ viewers: rows, total: rows.length })
   } catch (err) { next(err) }
 })
 
@@ -213,8 +299,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 
     const { rows } = await query(
       `${postSelectSQL}
-       WHERE p.id = $3 AND p.deleted_at IS NULL AND ${visibilitySQL}
-       GROUP BY p.id, u.id, d.name`,
+       WHERE p.id = $3 AND p.deleted_at IS NULL AND ${visibilitySQL(1, 2)}`,
       [userId, departmentId, req.params.id]
     )
 
@@ -228,26 +313,87 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 // PUT /api/posts/:id
 router.put('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, content, tags } = req.body as { title?: string; content?: string; tags?: string[] }
-    const { id: userId, role } = (req as RequestWithUser).user
+    const { title, content, tags } = req.body as { title?: string; content?: string; tags?: unknown }
+    const { id: userId, role, departmentId } = (req as RequestWithUser).user
+
+    if (title !== undefined && title.trim().length > MAX_TITLE_LEN) {
+      return res.status(400).json({ error: `Title must be ${MAX_TITLE_LEN} characters or less` })
+    }
+    let safeTags: string[] | undefined
+    if (tags !== undefined) {
+      if (!Array.isArray(tags)) return res.status(400).json({ error: 'tags must be an array' })
+      if ((tags as unknown[]).length > MAX_TAGS) return res.status(400).json({ error: `Maximum ${MAX_TAGS} tags allowed` })
+      safeTags = (tags as unknown[]).map(t => String(t).trim()).filter(Boolean)
+      if (safeTags.some(t => t.length > MAX_TAG_LEN)) {
+        return res.status(400).json({ error: `Each tag must be ${MAX_TAG_LEN} characters or less` })
+      }
+    }
 
     const { rows } = await query(
       `UPDATE posts
        SET title = COALESCE($3, title),
            content = COALESCE($4, content),
-           tags = COALESCE($5, tags),
+           tags = COALESCE($5::text[], tags),
            updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
          AND ($2 = 'admin' OR author_id = $6)
        RETURNING id`,
-      [req.params.id, role, title?.trim(), content?.trim(), tags, userId]
+      [req.params.id, role, title?.trim() ?? null, content?.trim() ?? null, safeTags ?? null, userId]
     )
 
     if (!rows[0]) return res.status(404).json({ error: 'Post not found or not authorized' })
-    res.json({ ok: true })
+
+    // Re-fetch full post shape so client gets the same shape as GET /api/posts
+    const { rows: fullRows } = await query(
+      `${postSelectSQL} WHERE p.id = $3 AND p.deleted_at IS NULL`,
+      [userId, departmentId, req.params.id]
+    )
+    res.json({ post: fullRows[0] ?? null })
   } catch (err) {
     next(err)
   }
+})
+
+// POST /api/posts/:id/notify — author re-sends NEW_POST notifications
+router.post('/:id/notify', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!UUID_RE.test(req.params.id as string)) return res.status(400).json({ error: 'Invalid post ID' })
+    const { id: userId, role } = (req as RequestWithUser).user
+
+    const { rows: postRows } = await query(
+      `SELECT author_id, visibility_scope FROM posts WHERE id = $1 AND deleted_at IS NULL`,
+      [req.params.id]
+    )
+    const post = postRows[0] as { author_id: string; visibility_scope: string } | undefined
+    if (!post) return res.status(404).json({ error: 'Post not found' })
+    if (post.author_id !== userId && role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
+
+    let recipientRows: Array<{ id: string }>
+    if (post.visibility_scope === 'DEPARTMENT') {
+      const { rows } = await query(
+        `SELECT DISTINCT u.id FROM users u
+         JOIN post_departments pd ON pd.department_id = u.department_id
+         WHERE pd.post_id = $1 AND u.id != $2`,
+        [req.params.id, userId]
+      )
+      recipientRows = rows as Array<{ id: string }>
+    } else {
+      const { rows } = await query(`SELECT id FROM users WHERE id != $1`, [userId])
+      recipientRows = rows as Array<{ id: string }>
+    }
+
+    for (let i = 0; i < recipientRows.length; i += NOTIFICATION_BATCH_SIZE) {
+      const batch = recipientRows.slice(i, i + NOTIFICATION_BATCH_SIZE)
+      const values = batch.map((_, j) => `($1, $2, $${j + 3}, 'NEW_POST')`).join(', ')
+      await query(
+        `INSERT INTO notifications (actor_id, post_id, user_id, type) VALUES ${values}`,
+        [userId, req.params.id, ...batch.map(r => r.id)]
+      )
+    }
+
+    sseManager.broadcast(recipientRows.map(r => r.id), { type: 'NOTIFICATION' })
+    res.json({ ok: true, notified: recipientRows.length })
+  } catch (err) { next(err) }
 })
 
 // DELETE /api/posts/:id (soft delete)
@@ -264,11 +410,7 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response, next: Nex
     )
 
     if (!rows[0]) return res.status(404).json({ error: 'Post not found or not authorized' })
-    await query(
-      `INSERT INTO audit_log (actor_id, action, target_id, detail)
-       VALUES ($1, 'POST_DELETE', $2, $3)`,
-      [userId, req.params.id, JSON.stringify({ deleted_by_role: role })]
-    )
+    logAudit(userId, 'POST_DELETE', req.params.id as string, { deleted_by_role: role })
     sseManager.broadcastAll({ type: 'DELETE_POST', postId: req.params.id })
     res.json({ ok: true })
   } catch (err) {

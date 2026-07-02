@@ -1,4 +1,5 @@
 import { useAuth } from '../contexts/AuthContext'
+import { initials as initialsOf } from '../lib/postMeta'
 
 interface QuickComposerProps {
   onOpen: () => void
@@ -6,7 +7,7 @@ interface QuickComposerProps {
 
 export default function QuickComposer({ onOpen }: QuickComposerProps) {
   const { user } = useAuth()
-  const initials = user?.full_name?.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() ?? '?'
+  const initials = initialsOf(user?.full_name)
 
   return (
     <div

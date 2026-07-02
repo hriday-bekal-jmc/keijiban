@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { api } from '../lib/api'
+import { colorFor } from '../lib/colors'
+import { initials as initialsOf } from '../lib/postMeta'
 
 export interface PublicUser {
   id: string
@@ -23,13 +25,6 @@ interface UserHoverCardProps {
   children: ReactNode
 }
 
-const COLORS = ['#7A5C30','#C05A18','#1E5FA8','#1A7A48','#6B35A8','#C07090']
-
-function colorFor(id: string) {
-  let n = 0
-  for (let i = 0; i < id.length; i++) n = (n + id.charCodeAt(i)) % COLORS.length
-  return COLORS[n]
-}
 
 export function UserHoverCard({ userId, userName, children }: UserHoverCardProps) {
   const navigate  = useNavigate()
@@ -68,8 +63,14 @@ export function UserHoverCard({ userId, userName, children }: UserHoverCardProps
       if (triggerRef.current) {
         const rect  = triggerRef.current.getBoundingClientRect()
         const cardW = 216
-        const left  = Math.min(rect.left, window.innerWidth - cardW - 12)
-        setPos({ top: rect.bottom + 6, left: Math.max(8, left) })
+        const cardH = 172 // approx: padding + avatar + vibe + button
+        const navH  = 88  // nav pill + safe area buffer
+        const left  = Math.max(8, Math.min(rect.left, window.innerWidth - cardW - 12))
+        const spaceBelow = window.innerHeight - rect.bottom - navH
+        const top = spaceBelow >= cardH + 6
+          ? rect.bottom + 6
+          : Math.max(8, rect.top - cardH - 6)
+        setPos({ top, left })
       }
       setVisible(true)
     }, 450)
@@ -91,7 +92,7 @@ export function UserHoverCard({ userId, userName, children }: UserHoverCardProps
   }
 
   const user     = data?.user
-  const initials = (user?.full_name ?? userName).split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+  const initials = initialsOf(user?.full_name ?? userName)
 
   return (
     <>

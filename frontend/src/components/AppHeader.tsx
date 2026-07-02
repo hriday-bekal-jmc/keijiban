@@ -1,4 +1,5 @@
 import { Search, BookOpen, Shield } from 'lucide-react'
+import { initials as initialsOf } from '../lib/postMeta'
 import type { User } from '../types'
 
 interface AppHeaderProps {
@@ -10,19 +11,14 @@ interface AppHeaderProps {
 }
 
 export default function AppHeader({ user, searchQuery, onSearch, onSearchClear, onAdmin }: AppHeaderProps) {
-  const initials = (user?.full_name ?? '')
-    .split(' ')
-    .map((n: string) => n[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase() || '?'
+  const initials = initialsOf(user?.full_name)
 
   return (
     <div
       className="sticky top-0 z-50"
       style={{ background: 'rgba(244,237,218,0.96)', backdropFilter: 'blur(20px)', borderBottom: '1px solid rgba(200,175,130,0.38)' }}
     >
-      <div className="max-w-[960px] mx-auto h-14 flex items-center gap-3 px-4">
+      <div className="max-w-[960px] mx-auto h-14 flex items-center gap-2 sm:gap-3 px-4">
         {/* Logo */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <div
@@ -31,13 +27,13 @@ export default function AppHeader({ user, searchQuery, onSearch, onSearchClear, 
           >
             <BookOpen size={15} strokeWidth={2.4} color="white" />
           </div>
-          <span className="font-extrabold text-base tracking-tight text-brand-dark" style={{ letterSpacing: '-0.4px' }}>
+          <span className="hidden sm:block font-extrabold text-base tracking-tight text-brand-dark" style={{ letterSpacing: '-0.4px' }}>
             JMC Board
           </span>
         </div>
 
         {/* Search */}
-        <div className="flex-1 relative">
+        <div className="flex-1 relative min-w-0">
           <Search
             size={13}
             strokeWidth={2.5}
@@ -63,7 +59,7 @@ export default function AppHeader({ user, searchQuery, onSearch, onSearchClear, 
           />
         </div>
 
-        {/* Right: dept badge + admin + avatar */}
+        {/* Right: dept badge (desktop only) + admin + avatar */}
         <div className="flex items-center gap-2 flex-shrink-0">
           {user?.role === 'admin' && onAdmin && (
             <button
@@ -77,7 +73,7 @@ export default function AppHeader({ user, searchQuery, onSearch, onSearchClear, 
           )}
           {user?.department_name && (
             <div
-              className="text-[10.5px] font-bold px-3 py-0.5 rounded-full"
+              className="hidden sm:block text-[10.5px] font-bold px-3 py-0.5 rounded-full max-w-[120px] truncate"
               style={{ background: '#FDE8D0', color: '#C05A18' }}
             >
               {user.department_name}

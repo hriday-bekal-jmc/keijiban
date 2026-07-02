@@ -1,22 +1,12 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import { api } from '../lib/api'
+import type { User } from '../types'
 
-export interface User {
-  id: string
-  email: string
-  full_name: string
-  avatar_url: string | null
-  role: 'member' | 'admin'
-  can_post: boolean
-  department_id: string
-  department_name: string
-  vibe_emoji: string | null
-  vibe_label: string | null
-}
+export type { User }
 
 interface AuthContextValue {
   user: User | null | undefined
-  login: (userData: User) => void
+  login: () => void
   logout: () => Promise<void>
   refreshUser: () => void
 }
@@ -44,7 +34,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return () => window.removeEventListener('auth:expired', handleExpired)
   }, [fetchMe])
 
-  const login = (userData: User): void => setUser(userData)
+  // Re-fetch from /auth/me so the full profile (including department_name, vibe, etc.)
+  // is always loaded from the canonical source, not from the login response body.
+  const login = useCallback((): void => { fetchMe() }, [fetchMe])
 
   const refreshUser = useCallback((): void => { fetchMe() }, [fetchMe])
 

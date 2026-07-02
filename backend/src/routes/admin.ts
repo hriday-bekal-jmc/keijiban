@@ -1,11 +1,17 @@
 import { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
-import { query } from '../config/db.js'
+import ExcelJS from 'exceljs'
+import { query, UUID_RE, parsePage, logAudit } from '../config/db.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { sseManager } from '../services/sse.js'
 import type { RequestWithUser } from '../types.js'
 
 const router = Router()
+
+const VALID_ROLES    = new Set(['member', 'admin'])
+const MAX_NAME_LEN   = 100
+const MAX_DEPT_LEN   = 100
+const AUDIT_LOG_LIMIT = 100
 
 // GET /api/admin/departments — available to all auth'd users (for composer dept picker)
 router.get('/departments', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
@@ -15,11 +21,14 @@ router.get('/departments', requireAuth, async (_req: Request, res: Response, nex
   } catch (err) { next(err) }
 })
 
-// PUT /api/admin/departments — admin only
+// POST /api/admin/departments — admin only
 router.post('/departments', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name } = req.body as { name?: string }
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' })
+    if (name.trim().length > MAX_DEPT_LEN) {
+      return res.status(400).json({ error: `Department name must be ${MAX_DEPT_LEN} characters or less` })
+    }
     const { rows } = await query(
       'INSERT INTO departments (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING *',
       [name.trim()]
@@ -28,46 +37,123 @@ router.post('/departments', requireAdmin, async (req: Request, res: Response, ne
   } catch (err) { next(err) }
 })
 
-// GET /api/admin/users
-router.get('/users', requireAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+// POST /api/admin/users — pre-register a user (google_id linked on first login)
+router.post('/users', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const { email, full_name, department_id, role, can_post } = req.body as {
+      email?: string
+      full_name?: string
+      department_id?: string
+      role?: string
+      can_post?: boolean
+    }
+
+    if (!email?.trim()) return res.status(400).json({ error: 'Email required' })
+    if (!full_name?.trim()) return res.status(400).json({ error: 'Name required' })
+    if (!department_id || !UUID_RE.test(department_id)) return res.status(400).json({ error: 'Valid department required' })
+    if (role !== undefined && !VALID_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role' })
+    if (full_name.trim().length > MAX_NAME_LEN) return res.status(400).json({ error: `Name must be ${MAX_NAME_LEN} chars or less` })
+
+    const normalEmail = email.trim().toLowerCase()
+
+    const { rows: existing } = await query('SELECT id FROM users WHERE email = $1', [normalEmail])
+    if (existing[0]) return res.status(409).json({ error: 'User with this email already exists' })
+
     const { rows } = await query(
-      `SELECT u.id, u.email, u.full_name, u.avatar_url, u.role,
-              u.department_id, d.name AS department_name, u.created_at
+      `INSERT INTO users (email, full_name, department_id, role, can_post)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, email, full_name, role, department_id, can_post, created_at`,
+      [normalEmail, full_name.trim(), department_id, role ?? 'member', can_post ?? true]
+    )
+
+    const actorId = (req as RequestWithUser).user.id
+    logAudit(actorId, 'USER_CREATE', rows[0].id, { email: normalEmail, role: role ?? 'member' })
+
+    console.info('[admin:user-created]', { by: actorId, email: normalEmail })
+    res.status(201).json({ user: rows[0] })
+  } catch (err) { next(err) }
+})
+
+// GET /api/admin/users — paginated
+router.get('/users', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { limit, offset } = parsePage(req.query, 50, 200)
+
+    const { rows } = await query(
+      `SELECT u.id, u.email, u.full_name, u.avatar_url, u.role, u.can_post,
+              u.department_id, d.name AS department_name, u.created_at,
+              u.chat_webhook_url
        FROM users u JOIN departments d ON d.id = u.department_id
-       ORDER BY u.created_at DESC`
+       ORDER BY u.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
     )
     res.json({ users: rows })
   } catch (err) { next(err) }
 })
 
-// PUT /api/admin/users/:id — change dept, role, deactivate
+// PUT /api/admin/users/:id — change dept, role, name, can_post
 router.put('/users/:id', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { department_id, role, full_name, can_post } = req.body as {
-      department_id?: string
-      role?: 'member' | 'admin'
-      full_name?: string
-      can_post?: boolean
+    if (!UUID_RE.test(req.params.id as string)) return res.status(400).json({ error: 'Invalid user ID' })
+
+    const { department_id, role, full_name, can_post, chat_webhook_url } = req.body as {
+      department_id?:    string
+      role?:             string
+      full_name?:        string
+      can_post?:         boolean
+      chat_webhook_url?: string | null
     }
+
+    if (department_id !== undefined && !UUID_RE.test(department_id)) {
+      return res.status(400).json({ error: 'Invalid department_id' })
+    }
+    if (role !== undefined && !VALID_ROLES.has(role)) {
+      return res.status(400).json({ error: 'Invalid role — must be member or admin' })
+    }
+    if (full_name !== undefined && full_name.trim().length > MAX_NAME_LEN) {
+      return res.status(400).json({ error: `full_name must be ${MAX_NAME_LEN} characters or less` })
+    }
+    if (chat_webhook_url !== undefined && chat_webhook_url !== null && chat_webhook_url !== '') {
+      if (!chat_webhook_url.startsWith('https://chat.googleapis.com')) {
+        return res.status(400).json({ error: 'chat_webhook_url must start with https://chat.googleapis.com' })
+      }
+    }
+
+    // Normalize empty string to null (clears the webhook)
+    const webhookVal = chat_webhook_url === '' ? null : (chat_webhook_url ?? undefined)
+
     const { rows } = await query(
       `UPDATE users
-       SET department_id = COALESCE($2, department_id),
-           role          = COALESCE($3, role),
-           full_name     = COALESCE($4, full_name),
-           can_post      = COALESCE($5, can_post),
-           updated_at    = now()
+       SET department_id    = COALESCE($2, department_id),
+           role             = COALESCE($3, role),
+           full_name        = COALESCE($4, full_name),
+           can_post         = COALESCE($5, can_post),
+           chat_webhook_url = CASE WHEN $6::boolean THEN $7 ELSE chat_webhook_url END,
+           updated_at       = now()
        WHERE id = $1
-       RETURNING id, full_name, role, department_id, can_post`,
-      [req.params.id, department_id ?? null, role ?? null, full_name ?? null, can_post ?? null]
+       RETURNING id, full_name, role, department_id, can_post, chat_webhook_url`,
+      [
+        req.params.id,
+        department_id ?? null,
+        role ?? null,
+        full_name?.trim() ?? null,
+        can_post ?? null,
+        chat_webhook_url !== undefined,  // $6: whether to update webhook
+        webhookVal ?? null,              // $7: new value (null = clear)
+      ]
     )
     if (!rows[0]) return res.status(404).json({ error: 'User not found' })
 
-    await query(
-      `INSERT INTO audit_log (actor_id, action, target_id, detail)
-       VALUES ($1, 'USER_UPDATE', $2, $3)`,
-      [(req as RequestWithUser).user.id, req.params.id, JSON.stringify(req.body)]
-    )
+    const actorId = (req as RequestWithUser).user.id
+    const auditDetail = {
+      ...(department_id    !== undefined && { department_id }),
+      ...(role             !== undefined && { role }),
+      ...(full_name        !== undefined && { full_name: full_name.trim() }),
+      ...(can_post         !== undefined && { can_post }),
+      ...(chat_webhook_url !== undefined && { chat_webhook_url: !!webhookVal }),
+    }
+    logAudit(actorId, 'USER_UPDATE', req.params.id as string, auditDetail)
 
     res.json({ user: rows[0] })
   } catch (err) { next(err) }
@@ -83,10 +169,7 @@ router.post('/posts/:id/pin', requireAdmin, async (req: Request, res: Response, 
       [req.params.id as string, actorId]
     )
     if (!rows[0]) return res.status(404).json({ error: 'Post not found' })
-    await query(
-      `INSERT INTO audit_log (actor_id, action, target_id) VALUES ($1, 'POST_PIN', $2)`,
-      [actorId, req.params.id]
-    )
+    logAudit(actorId, 'POST_PIN', req.params.id as string)
     sseManager.broadcastAll({ type: 'PIN_POST', postId: req.params.id as string, isPinned: true })
     res.json({ ok: true })
   } catch (err) { next(err) }
@@ -102,10 +185,7 @@ router.delete('/posts/:id/pin', requireAdmin, async (req: Request, res: Response
       [req.params.id as string]
     )
     if (!rows[0]) return res.status(404).json({ error: 'Post not found' })
-    await query(
-      `INSERT INTO audit_log (actor_id, action, target_id) VALUES ($1, 'POST_UNPIN', $2)`,
-      [actorId, req.params.id]
-    )
+    logAudit(actorId, 'POST_UNPIN', req.params.id as string)
     sseManager.broadcastAll({ type: 'PIN_POST', postId: req.params.id as string, isPinned: false })
     res.json({ ok: true })
   } catch (err) { next(err) }
@@ -114,12 +194,20 @@ router.delete('/posts/:id/pin', requireAdmin, async (req: Request, res: Response
 // GET /api/admin/audit-log
 router.get('/audit-log', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { action, actor_id, limit = '60', offset = '0' } = req.query as Record<string, string | undefined>
-    const params: unknown[] = [parseInt(limit) || 60, parseInt(offset) || 0]
+    const { action, actor_id } = req.query as Record<string, string | undefined>
+    const { limit, offset } = parsePage(req.query, 60, AUDIT_LOG_LIMIT)
+    const params: unknown[] = [limit, offset]
     const conditions: string[] = []
 
-    if (action) { params.push(action.toUpperCase()); conditions.push(`a.action = $${params.length}`) }
-    if (actor_id) { params.push(actor_id); conditions.push(`a.actor_id = $${params.length}::uuid`) }
+    if (action) {
+      params.push(action.toUpperCase())
+      conditions.push(`a.action = $${params.length}`)
+    }
+    if (actor_id) {
+      if (!UUID_RE.test(actor_id)) return res.status(400).json({ error: 'Invalid actor_id' })
+      params.push(actor_id)
+      conditions.push(`a.actor_id = $${params.length}::uuid`)
+    }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
 
@@ -140,6 +228,76 @@ router.get('/audit-log', requireAdmin, async (req: Request, res: Response, next:
     )
 
     res.json({ logs: rows })
+  } catch (err) { next(err) }
+})
+
+// POST /api/admin/webhooks/import — upload Excel, match by アドレス column, set chat_webhook_url
+// Accepts raw binary body (Content-Type: application/octet-stream or any)
+router.post('/webhooks/import', requireAdmin,
+  // Allow raw binary body (xlsx file) up to 10 MB
+  (req, _res, next) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => { (req as any).rawBody = Buffer.concat(chunks); next() })
+    req.on('error', next)
+  },
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const buf: Buffer = (req as any).rawBody
+      if (!buf || buf.length === 0) return res.status(400).json({ error: 'No file data received' })
+
+      const wb = new ExcelJS.Workbook()
+      await wb.xlsx.load(buf as any)
+      const ws = wb.worksheets[0]
+      if (!ws) return res.status(400).json({ error: 'ワークシートが見つかりません' })
+
+      // Map header row → column indexes
+      const headers: Record<string, number> = {}
+      ws.getRow(1).eachCell((cell, col) => { headers[String(cell.text).trim()] = col })
+      const emailCol = headers['アドレス']
+      const hookCol  = headers['Google Chat WebHook']
+      if (!emailCol || !hookCol) {
+        return res.status(400).json({ error: 'ヘッダー行に「アドレス」「Google Chat WebHook」列が必要です' })
+      }
+
+      let updated = 0
+      let skipped = 0
+
+      for (let i = 2; i <= ws.rowCount; i++) {
+        const row = ws.getRow(i)
+        const email      = String(row.getCell(emailCol).text ?? '').trim().toLowerCase()
+        const webhookUrl = String(row.getCell(hookCol).text ?? '').trim()
+
+        if (!email || !webhookUrl || !webhookUrl.startsWith('https://')) {
+          skipped++
+          continue
+        }
+
+        const { rowCount } = await query(
+          `UPDATE users SET chat_webhook_url = $1 WHERE LOWER(email) = $2`,
+          [webhookUrl, email]
+        )
+        if ((rowCount ?? 0) > 0) updated++
+        else skipped++
+      }
+
+      res.json({ ok: true, updated, skipped })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// GET /api/admin/webhooks — list users with their webhook status
+router.get('/webhooks', requireAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { rows } = await query(
+      `SELECT id, full_name, email,
+              CASE WHEN chat_webhook_url IS NOT NULL THEN TRUE ELSE FALSE END AS has_webhook
+       FROM users
+       ORDER BY full_name`
+    )
+    res.json({ users: rows })
   } catch (err) { next(err) }
 })
 

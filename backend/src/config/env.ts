@@ -1,5 +1,4 @@
-import 'dotenv/config'
-
+// Env vars loaded via node/tsx --env-file-if-exists=.env (see package.json scripts)
 const required = ['DATABASE_URL', 'JWT_SECRET', 'GOOGLE_CLIENT_ID']
 
 for (const key of required) {
@@ -19,6 +18,8 @@ export interface Env {
   googleServiceAccountKey: Record<string, unknown> | null
   driveSharedDriveId: string | null
   gmailSenderEmail: string | null
+  gmailUser: string | null
+  gmailAppPassword: string | null
 }
 
 export const env: Env = {
@@ -28,7 +29,7 @@ export const env: Env = {
   googleClientId: process.env.GOOGLE_CLIENT_ID as string,
   allowedDomain: process.env.ALLOWED_EMAIL_DOMAIN || 'jmc-ltd.co.jp',
   cookieDomain: process.env.COOKIE_DOMAIN || 'localhost',
-  isDev: process.env.NODE_ENV !== 'production',
+  isDev: process.env.NODE_ENV === 'development',
   appBaseUrl: process.env.APP_BASE_URL || 'http://localhost:5173',
   superAdminEmails: new Set(
     (process.env.SUPER_ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean)
@@ -42,4 +43,6 @@ export const env: Env = {
   driveSharedDriveId: process.env.DRIVE_SHARED_DRIVE_ID || null,
   // Email — optional; email disabled when absent
   gmailSenderEmail: process.env.GMAIL_SENDER_EMAIL || null,
+  gmailUser:        process.env.GMAIL_USER        || null,
+  gmailAppPassword: process.env.GMAIL_APP_PASSWORD || null,
 }

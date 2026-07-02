@@ -2,20 +2,90 @@
 @tailwind components;
 @tailwind utilities;
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
 
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #D4C3A0; border-radius: 4px; }
 
-body {
+html {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Background on <html> so it acts as the true viewport fill.
+     Body background would propagate to the viewport and cover the DotGrid
+     canvas even at z-index 1 — moving it to html prevents that. */
   background: #F4EDDA;
+}
+
+body {
+  height: 100%;
+  background: transparent;
   font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
   color: #3A2A1A;
   -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: contain;
+  -webkit-touch-callout: none;
+  overflow-x: hidden;
+}
+
+button, a, [role="button"] {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Momentum scroll for horizontal chip rows and any overflow containers */
+.scroll-touch {
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
 }
 
 ::selection { background: #FDE8D0; color: #C05A18; }
+
+/* ── Rendered markdown (renderMarkdown output) ─────────────────────────────────
+   Values copied verbatim from the previous inline styles — visuals unchanged. */
+.md-body .md-p  { line-height: 1.65; }
+.md-body .md-sp { height: 6px; }
+.md-body .md-h1 { font-size: 17px; font-weight: 900; color: #3A2A1A; margin: 14px 0 4px; letter-spacing: -0.4px; }
+.md-body .md-h2 { font-size: 15px; font-weight: 800; color: #3A2A1A; margin: 12px 0 4px; letter-spacing: -0.3px; }
+.md-body .md-h3 { font-size: 13px; font-weight: 800; color: #3A2A1A; margin: 10px 0 2px; letter-spacing: -0.2px; }
+.md-body .md-quote { border-left: 3px solid #E8732A; padding-left: 10px; color: #7A5C30; font-style: italic; margin: 4px 0; }
+.md-body s    { color: #A8906E; }
+.md-body mark { background: #FEF08A; padding: 0 2px; border-radius: 2px; color: #713F12; }
+.md-body code { background: #F0E8D8; padding: 1px 5px; border-radius: 4px; font-size: 0.88em; font-family: monospace; }
+.md-body .md-pre { background: #F4EDDA; border-radius: 8px; padding: 10px 14px; margin: 8px 0; overflow-x: auto; font-size: 12px; line-height: 1.55; font-family: monospace; }
+.md-body .md-pre code { background: none; padding: 0; font-size: inherit; }
+.md-body a { color: #1E5FA8; text-decoration: underline; text-underline-offset: 2px; }
+.md-body .md-mention { color: #1E5FA8; font-weight: 600; background: rgba(30,95,168,0.08); padding: 0 3px; border-radius: 4px; }
+.md-body .md-img { max-width: 100%; border-radius: 10px; margin: 10px 0; display: block; cursor: zoom-in; }
+.md-body hr { border: none; border-top: 1px solid #E4D4B8; margin: 10px 0; }
+.md-body ul, .md-body ol { list-style: none; padding: 0; margin: 4px 0; }
+.md-body li { display: flex; gap: 7px; align-items: flex-start; padding: 2px 0; }
+.md-body .md-t      { line-height: 1.6; }
+.md-body .md-bullet { color: #E8732A; font-weight: 900; flex-shrink: 0; margin-top: 1px; font-size: 15px; line-height: 1; }
+.md-body .md-num    { color: #A8906E; font-weight: 700; flex-shrink: 0; min-width: 20px; text-align: right; margin-top: 1px; font-size: 12px; }
+.md-body .md-check  { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; background: #16A34A; border-radius: 3px; flex-shrink: 0; margin-top: 2px; color: white; font-size: 9px; font-weight: 900; }
+.md-body .md-done   { text-decoration: line-through; color: #A8906E; line-height: 1.6; }
+.md-body .md-uncheck { display: inline-flex; width: 15px; height: 15px; border: 1.5px solid #C4A87A; border-radius: 3px; flex-shrink: 0; margin-top: 2px; }
+.md-body .md-todo   { color: #3A2A1A; line-height: 1.6; }
+.md-body .md-tablewrap { overflow-x: auto; margin: 8px 0; }
+.md-body table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.md-body th, .md-body td { padding: 7px 12px; border: 1px solid #E4D4B8; color: #3A2A1A; text-align: left; }
+.md-body th { background: #F0E8D8; font-weight: 700; }
+.md-body tr:nth-child(odd)  td { background: #FFFDF7; }
+.md-body tr:nth-child(even) td { background: #FAF5EC; }
+.md-body .md-callout { border-left: 4px solid; border-radius: 8px; padding: 10px 14px; margin: 8px 0; display: flex; gap: 8px; align-items: flex-start; }
+.md-body .md-callout-icon { flex-shrink: 0; font-size: 14px; }
+.md-body .md-callout-text { line-height: 1.6; }
+
+/* Bottom-blur strips fallback when backdrop-filter is unsupported */
+@supports not (backdrop-filter: blur(1px)) {
+  .bottom-blur > div { background: rgba(244, 237, 218, 0.6); opacity: 0.7; }
+}
 
 /* ── Tiptap / ProseMirror WYSIWYG editor ───────────────────────────────────── */
 .ProseMirror { outline: none; min-height: 220px; line-height: 1.65; font-size: 13.5px; color: #3A2A1A; font-family: 'Plus Jakarta Sans', -apple-system, sans-serif; }

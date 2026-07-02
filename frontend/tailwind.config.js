@@ -20,11 +20,9 @@ export default {
         sans: ['"Plus Jakarta Sans"', '-apple-system', 'sans-serif'],
       },
       keyframes: {
-        popIn:     { '0%': { opacity:'0', transform:'scale(0.94)' }, '60%': { transform:'scale(1.02)' }, '100%': { opacity:'1', transform:'scale(1)' } },
         slideDown: { from: { opacity:'0', transform:'translateY(-8px)' }, to: { opacity:'1', transform:'translateY(0)' } },
       },
       animation: {
-        popIn:     'popIn 0.25s ease forwards',
         slideDown: 'slideDown 0.3s ease',
       },
     },

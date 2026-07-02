@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Shield, ChevronDown, X, Plus, Check, FileText, PenSquare, Trash2, Pin, User as UserIcon, RefreshCw, Heart, MessageCircle, Bookmark, Smile, Edit3 } from 'lucide-react'
+import { Shield, ChevronDown, X, Plus, Check, FileText, PenSquare, Trash2, Pin, User as UserIcon, RefreshCw, Heart, MessageCircle, Bookmark, Smile, Edit3, ExternalLink, UserPlus, Webhook, Upload, CheckCircle2, AlertCircle } from 'lucide-react'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
+import { initials as initialsOf } from '../lib/postMeta'
 import type { User, Department } from '../types'
 
 const PILL_SPRING = { type: 'spring', stiffness: 480, damping: 30, mass: 0.7 } as const
@@ -14,6 +16,7 @@ const PILL_SPRING = { type: 'spring', stiffness: 480, damping: 30, mass: 0.7 } a
 interface AdminUser extends User {
   created_at: string
   can_post: boolean
+  chat_webhook_url?: string | null
 }
 
 interface EditState {
@@ -21,6 +24,7 @@ interface EditState {
   role: 'member' | 'admin'
   full_name: string
   can_post: boolean
+  chat_webhook_url: string
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -33,7 +37,7 @@ const ROLE_COLORS = {
 const DEPT_AVATAR = ['#7A5C30','#C05A18','#1E5FA8','#1A7A48','#6B35A8','#C07090']
 
 function Avatar({ name, idx = 0 }: { name: string; idx?: number }) {
-  const ini = (name ?? '').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || '?'
+  const ini = initialsOf(name)
   return (
     <div
       className="w-9 h-9 rounded-full flex items-center justify-center text-white font-extrabold text-[11px] flex-shrink-0"
@@ -56,10 +60,11 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [form, setForm] = useState<EditState>({
-    department_id: user.department_id,
-    role: user.role,
-    full_name: user.full_name,
-    can_post: user.can_post,
+    department_id:    user.department_id,
+    role:             user.role,
+    full_name:        user.full_name,
+    can_post:         user.can_post,
+    chat_webhook_url: user.chat_webhook_url ?? '',
   })
 
   const save = useMutation<unknown, Error, EditState>({
@@ -75,10 +80,11 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
   })
 
   const changed =
-    form.department_id !== user.department_id ||
-    form.role !== user.role ||
-    form.full_name !== user.full_name ||
-    form.can_post !== user.can_post
+    form.department_id    !== user.department_id ||
+    form.role             !== user.role ||
+    form.full_name        !== user.full_name ||
+    form.can_post         !== user.can_post ||
+    form.chat_webhook_url !== (user.chat_webhook_url ?? '')
 
   return (
     <motion.div
@@ -95,8 +101,8 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
         exit={{ opacity: 0, y: 40 }}
         transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
         onClick={e => e.stopPropagation()}
-        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden"
-        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
+        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col"
+        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', maxHeight: 'calc(100dvh - 80px)' }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid #E4D4B8' }}>
@@ -113,7 +119,7 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
           </button>
         </div>
 
-        <div className="px-5 py-5 flex flex-col gap-4">
+        <div className="px-5 py-5 pb-10 flex flex-col gap-4 overflow-y-auto flex-1">
           {/* Name */}
           <div>
             <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">表示名</label>
@@ -204,6 +210,30 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
             </button>
           </div>
 
+          {/* Google Chat Webhook */}
+          <div>
+            <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">Google Chat Webhook URL</label>
+            <input
+              value={form.chat_webhook_url}
+              onChange={e => setForm(f => ({ ...f, chat_webhook_url: e.target.value }))}
+              placeholder="https://chat.googleapis.com/v1/spaces/..."
+              className="w-full px-3.5 py-2.5 rounded-xl text-[12px] text-brand-dark outline-none font-mono"
+              style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+              onFocus={e => e.target.style.borderColor = '#1E5FA8'}
+              onBlur={e => e.target.style.borderColor = '#E4D4B8'}
+            />
+            {form.chat_webhook_url && !form.chat_webhook_url.startsWith('https://chat.googleapis.com') && (
+              <div className="text-[10.5px] mt-1" style={{ color: '#C05A18' }}>
+                URLは https://chat.googleapis.com で始まる必要があります
+              </div>
+            )}
+            {form.chat_webhook_url === '' && (user.chat_webhook_url ?? '') !== '' && (
+              <div className="text-[10.5px] mt-1" style={{ color: '#C05A18' }}>
+                空にすると Webhook が削除されます
+              </div>
+            )}
+          </div>
+
           {/* Save */}
           <button
             onClick={() => save.mutate(form)}
@@ -280,14 +310,200 @@ function AddDeptModal({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ── add user modal ────────────────────────────────────────────────────────────
+
+interface AddUserForm {
+  email: string
+  full_name: string
+  department_id: string
+  role: 'member' | 'admin'
+  can_post: boolean
+}
+
+function AddUserModal({ departments, onClose }: { departments: Department[]; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+
+  useEffect(() => {
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [])
+
+  const [form, setForm] = useState<AddUserForm>({
+    email: '',
+    full_name: '',
+    department_id: departments[0]?.id ?? '',
+    role: 'member',
+    can_post: true,
+  })
+
+  const add = useMutation<unknown, Error, AddUserForm>({
+    mutationFn: (body) => api.post('/admin/users', body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      toast.success('ユーザーを追加しました')
+      onClose()
+    },
+    onError: (err) => {
+      toast.error(err.message ?? 'ユーザーの追加に失敗しました')
+    },
+  })
+
+  const valid = form.email.trim().includes('@') && form.full_name.trim().length > 0 && !!form.department_id
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center pb-24 px-0 sm:p-4"
+      style={{ background: 'rgba(58,42,26,0.45)', backdropFilter: 'blur(4px)' }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 40 }}
+        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+        onClick={e => e.stopPropagation()}
+        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl flex flex-col"
+        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', maxHeight: 'calc(100dvh - 120px)' }}
+      >
+        {/* Header — never scrolls */}
+        <div className="flex-shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid #E4D4B8' }}>
+          <div>
+            <div className="font-extrabold text-[15px] text-brand-dark">ユーザーを追加</div>
+            <div className="text-[11px] text-brand-muted">次回ログイン時に設定が適用されます</div>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: '#F0E8D8', color: '#A8906E' }}>
+            <X size={14} strokeWidth={2.5} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto overscroll-contain px-5 pt-5 pb-8 flex flex-col gap-4">
+          {/* Email */}
+          <div>
+            <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">メールアドレス</label>
+            <input
+              autoFocus
+              type="email"
+              value={form.email}
+              onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+              placeholder="user@jmc-ltd.co.jp"
+              className="w-full px-3.5 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none"
+              style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+              onFocus={e => e.target.style.borderColor = '#E8732A'}
+              onBlur={e => e.target.style.borderColor = '#E4D4B8'}
+            />
+          </div>
+
+          {/* Name */}
+          <div>
+            <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">表示名</label>
+            <input
+              value={form.full_name}
+              onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))}
+              placeholder="山田 太郎"
+              className="w-full px-3.5 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none"
+              style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+              onFocus={e => e.target.style.borderColor = '#E8732A'}
+              onBlur={e => e.target.style.borderColor = '#E4D4B8'}
+            />
+          </div>
+
+          {/* Department */}
+          <div>
+            <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">部署</label>
+            <div className="relative">
+              <select
+                value={form.department_id}
+                onChange={e => setForm(f => ({ ...f, department_id: e.target.value }))}
+                className="w-full appearance-none px-3.5 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none pr-9"
+                style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+              >
+                {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" color="#A8906E" />
+            </div>
+          </div>
+
+          {/* Role */}
+          <div>
+            <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">権限</label>
+            <div className="flex gap-2">
+              {(['member', 'admin'] as const).map(r => {
+                const { bg, color, label } = ROLE_COLORS[r]
+                const active = form.role === r
+                return (
+                  <motion.button
+                    key={r}
+                    onClick={() => setForm(f => ({ ...f, role: r }))}
+                    whileTap={{ scale: 0.94 }}
+                    transition={PILL_SPRING}
+                    className="relative flex-1 py-2.5 rounded-xl text-[13px] font-bold"
+                    style={{ color: active ? color : '#A8906E', border: `1.5px solid ${active ? color : '#E4D4B8'}` }}
+                  >
+                    {active && (
+                      <motion.span layoutId="add-role-pill" className="absolute inset-0 rounded-xl" style={{ background: bg }} transition={PILL_SPRING} />
+                    )}
+                    <span className="relative z-10">{label}</span>
+                  </motion.button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Post permission */}
+          <div
+            className="flex items-center justify-between p-3.5 rounded-xl"
+            style={{ background: form.can_post ? '#D6F0E4' : '#FDE8D0', border: `1.5px solid ${form.can_post ? '#1A7A48' : '#C05A18'}` }}
+          >
+            <div>
+              <div className="text-[13px] font-bold" style={{ color: form.can_post ? '#1A7A48' : '#C05A18' }}>
+                {form.can_post ? '✅ 投稿許可あり' : '🚫 投稿を制限中'}
+              </div>
+              <div className="text-[11px] mt-0.5" style={{ color: form.can_post ? '#1A7A48' : '#C05A18', opacity: 0.8 }}>
+                {form.can_post ? 'このユーザーは投稿できます' : '投稿ボタンが非表示になります'}
+              </div>
+            </div>
+            <button
+              onClick={() => setForm(f => ({ ...f, can_post: !f.can_post }))}
+              className="w-12 h-6 rounded-full cursor-pointer transition-colors flex items-center px-0.5 flex-shrink-0"
+              style={{ background: form.can_post ? '#1A7A48' : '#C05A18', justifyContent: form.can_post ? 'flex-end' : 'flex-start' }}
+            >
+              <div className="w-5 h-5 rounded-full shadow-sm" style={{ background: '#FFFDF7' }} />
+            </button>
+          </div>
+
+          <button
+            onClick={() => { if (valid) add.mutate(form) }}
+            disabled={!valid || add.isPending}
+            className="w-full py-3 rounded-xl font-extrabold text-[14px] text-white transition-opacity disabled:opacity-40 flex items-center justify-center gap-2"
+            style={{ background: '#E8732A' }}
+          >
+            <UserPlus size={15} strokeWidth={2.5} />
+            {add.isPending ? '追加中…' : 'ユーザーを追加'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 export default function AdminPanel() {
   const { user: me } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null)
   const [addDeptOpen, setAddDeptOpen] = useState(false)
+  const [addUserOpen, setAddUserOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const [activeTab, setActiveTab] = useState<'users' | 'departments' | 'logs'>('users')
+  const [activeTab, setActiveTab] = useState<'users' | 'departments' | 'logs' | 'webhooks'>('users')
+
+  const openProfile = (userId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const existingBg = (location.state as { background?: unknown } | null)?.background
+    navigate(`/users/${userId}`, { state: { background: existingBg ?? location } })
+  }
 
   const { data: usersData, isLoading: usersLoading } = useQuery<{ users: AdminUser[] }>({
     queryKey: ['admin-users'],
@@ -334,6 +550,7 @@ export default function AdminPanel() {
             { id: 'users',       label: `ユーザー (${users.length})` },
             { id: 'departments', label: '部署' },
             { id: 'logs',        label: 'ログ' },
+            { id: 'webhooks',    label: 'Chat通知' },
           ] as const).map(({ id, label }) => {
             const isActive = activeTab === id
             return (
@@ -362,16 +579,26 @@ export default function AdminPanel() {
 
       {activeTab === 'users' && (
         <div className="max-w-[640px]">
-          {/* Search */}
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="名前またはメールで検索…"
-            className="w-full px-4 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none mb-4"
-            style={{ background: '#FFFDF7', border: '1.5px solid #E4D4B8' }}
-            onFocus={e => e.target.style.borderColor = '#E8732A'}
-            onBlur={e => e.target.style.borderColor = '#E4D4B8'}
-          />
+          {/* Search + add button */}
+          <div className="flex gap-2 mb-4">
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="名前またはメールで検索…"
+              className="flex-1 px-4 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none"
+              style={{ background: '#FFFDF7', border: '1.5px solid #E4D4B8' }}
+              onFocus={e => e.target.style.borderColor = '#E8732A'}
+              onBlur={e => e.target.style.borderColor = '#E4D4B8'}
+            />
+            <button
+              onClick={() => setAddUserOpen(true)}
+              className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl font-bold text-[13px] text-white flex-shrink-0"
+              style={{ background: '#E8732A' }}
+            >
+              <UserPlus size={14} strokeWidth={2.5} />
+              追加
+            </button>
+          </div>
 
           {usersLoading ? (
             <div className="flex justify-center py-16">
@@ -387,22 +614,36 @@ export default function AdminPanel() {
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: Math.min(i * 0.02, 0.2) }}
-                    onClick={() => setEditingUser(u)}
-                    className="flex items-center gap-3 px-4 py-3.5 rounded-2xl cursor-pointer transition-all"
+                    className="flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all"
                     style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
                     onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 3px 14px rgba(100,60,10,0.08)')}
                     onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
                   >
-                    <Avatar name={u.full_name} idx={i} />
-                    <div className="flex-1 min-w-0">
-                      <div className="font-bold text-[13px] text-brand-dark flex items-center gap-2">
+                    {/* Avatar — click opens profile panel */}
+                    <button
+                      onClick={e => openProfile(u.id, e)}
+                      className="flex-shrink-0 rounded-full transition-opacity hover:opacity-70"
+                      title="プロフィールを見る"
+                    >
+                      <Avatar name={u.full_name} idx={i} />
+                    </button>
+
+                    {/* Name/email — click opens profile panel */}
+                    <button
+                      onClick={e => openProfile(u.id, e)}
+                      className="flex-1 min-w-0 text-left transition-opacity hover:opacity-70"
+                    >
+                      <div className="font-bold text-[13px] text-brand-dark flex items-center gap-1.5">
                         {u.full_name}
                         {u.id === me?.id && (
                           <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full" style={{ background: '#D6F0E4', color: '#1A7A48' }}>YOU</span>
                         )}
+                        <ExternalLink size={10} color="#A8906E" strokeWidth={2.5} />
                       </div>
                       <div className="text-[11px] text-brand-muted truncate">{u.email}</div>
-                    </div>
+                    </button>
+
+                    {/* Badges + edit icon */}
                     <div className="flex items-center gap-2 flex-shrink-0">
                       <span className="text-[10.5px] font-semibold px-2.5 py-0.5 rounded-full" style={{ background: '#F0E8D8', color: '#7A5C30' }}>
                         {u.department_name}
@@ -410,6 +651,14 @@ export default function AdminPanel() {
                       <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full" style={{ background: bg, color }}>
                         {label}
                       </span>
+                      <button
+                        onClick={e => { e.stopPropagation(); setEditingUser(u) }}
+                        className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 transition-opacity hover:opacity-80"
+                        style={{ background: '#F0E8D8', color: '#7A5C30' }}
+                        title="ユーザーを編集"
+                      >
+                        <Edit3 size={12} strokeWidth={2.5} />
+                      </button>
                     </div>
                   </motion.div>
                 )
@@ -452,6 +701,7 @@ export default function AdminPanel() {
       )}
 
       {activeTab === 'logs' && <AuditLogTab />}
+      {activeTab === 'webhooks' && <WebhooksTab />}
 
       <AnimatePresence>
         {editingUser && (
@@ -462,7 +712,171 @@ export default function AdminPanel() {
           />
         )}
         {addDeptOpen && <AddDeptModal onClose={() => setAddDeptOpen(false)} />}
+        {addUserOpen && <AddUserModal departments={departments} onClose={() => setAddUserOpen(false)} />}
       </AnimatePresence>
+    </div>
+  )
+}
+
+// ── Webhooks tab ──────────────────────────────────────────────────────────────
+
+interface WebhookUser {
+  id: string
+  full_name: string
+  email: string
+  has_webhook: boolean
+}
+
+function WebhooksTab() {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const [uploading, setUploading] = useState(false)
+  const [lastResult, setLastResult] = useState<{ updated: number; skipped: number } | null>(null)
+
+  const { data, isLoading, refetch } = useQuery<{ users: WebhookUser[] }>({
+    queryKey: ['admin-webhooks'],
+    queryFn: () => api.get('/admin/webhooks'),
+    staleTime: 30_000,
+  })
+
+  const users = data?.users ?? []
+  const withWebhook    = users.filter(u => u.has_webhook).length
+  const withoutWebhook = users.length - withWebhook
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+
+    setUploading(true)
+    setLastResult(null)
+    try {
+      const buf = await file.arrayBuffer()
+      const res = await fetch('/api/admin/webhooks/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: buf,
+        credentials: 'include',
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Unknown error' }))
+        throw new Error(err.error ?? `HTTP ${res.status}`)
+      }
+      const json = await res.json() as { updated: number; skipped: number }
+      setLastResult(json)
+      toast.success(`${json.updated}件のWebhookを更新しました`)
+      queryClient.invalidateQueries({ queryKey: ['admin-webhooks'] })
+      refetch()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'アップロードに失敗しました')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="max-w-[640px]">
+      {/* Upload card */}
+      <div
+        className="rounded-2xl p-5 mb-5 flex flex-col gap-4"
+        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
+      >
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: '#FDE8D0' }}>
+            <Webhook size={18} color="#E8732A" strokeWidth={2.5} />
+          </div>
+          <div>
+            <div className="font-extrabold text-[14px] text-brand-dark">Google Chat Webhook 一括設定</div>
+            <div className="text-[12px] text-brand-muted mt-0.5">
+              Excelファイルの「アドレス」「Google Chat WebHook」列でユーザーと対応付けます
+            </div>
+          </div>
+        </div>
+
+        {/* Stats row */}
+        <div className="flex gap-2">
+          <div className="flex-1 flex items-center gap-2 px-3.5 py-2.5 rounded-xl" style={{ background: '#D6F0E4', border: '1px solid #B8E8CC' }}>
+            <CheckCircle2 size={14} color="#1A7A48" strokeWidth={2.5} />
+            <div>
+              <div className="font-extrabold text-[13px]" style={{ color: '#1A7A48' }}>{withWebhook}</div>
+              <div className="text-[10px]" style={{ color: '#1A7A48', opacity: 0.8 }}>設定済み</div>
+            </div>
+          </div>
+          <div className="flex-1 flex items-center gap-2 px-3.5 py-2.5 rounded-xl" style={{ background: '#F0E8D8', border: '1px solid #E4D4B8' }}>
+            <AlertCircle size={14} color="#A8906E" strokeWidth={2.5} />
+            <div>
+              <div className="font-extrabold text-[13px]" style={{ color: '#A8906E' }}>{withoutWebhook}</div>
+              <div className="text-[10px]" style={{ color: '#A8906E', opacity: 0.8 }}>未設定</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Upload result */}
+        {lastResult && (
+          <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-[12px] font-semibold" style={{ background: '#D6F0E4', color: '#1A7A48' }}>
+            <CheckCircle2 size={13} strokeWidth={2.5} />
+            {lastResult.updated}件を更新 · {lastResult.skipped}件をスキップ
+          </div>
+        )}
+
+        {/* Upload button */}
+        <label
+          className="flex items-center justify-center gap-2 py-3 rounded-xl font-extrabold text-[14px] text-white cursor-pointer transition-opacity"
+          style={{ background: uploading ? '#C8602A' : '#E8732A', opacity: uploading ? 0.7 : 1 }}
+        >
+          <Upload size={15} strokeWidth={2.5} />
+          {uploading ? 'アップロード中…' : 'Excelファイルをアップロード'}
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={handleFileUpload}
+            disabled={uploading}
+            className="hidden"
+          />
+        </label>
+
+        <div className="text-[11px] text-brand-muted">
+          対応列：<code className="px-1 py-0.5 rounded" style={{ background: '#F0E8D8' }}>アドレス</code>（メール）、
+          <code className="px-1 py-0.5 rounded ml-1" style={{ background: '#F0E8D8' }}>Google Chat WebHook</code>（https://... で始まるURL）
+        </div>
+      </div>
+
+      {/* User list */}
+      {isLoading ? (
+        <div className="flex justify-center py-10">
+          <div className="w-7 h-7 border-2 border-brand-orange border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {users.map((u, i) => (
+            <div
+              key={u.id}
+              className="flex items-center gap-3 px-4 py-3 rounded-xl"
+              style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
+            >
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center text-white font-extrabold text-[10px] flex-shrink-0"
+                style={{ background: DEPT_AVATAR[i % DEPT_AVATAR.length] }}
+              >
+                {u.full_name.slice(0, 1)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-bold text-[12.5px] text-brand-dark truncate">{u.full_name}</div>
+                <div className="text-[11px] text-brand-muted truncate">{u.email}</div>
+              </div>
+              {u.has_webhook ? (
+                <span className="flex items-center gap-1 text-[10px] font-extrabold px-2 py-1 rounded-full" style={{ background: '#D6F0E4', color: '#1A7A48' }}>
+                  <CheckCircle2 size={10} strokeWidth={2.5} /> 設定済み
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full" style={{ background: '#F0E8D8', color: '#A8906E' }}>
+                  <AlertCircle size={10} strokeWidth={2.5} /> 未設定
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -586,7 +1000,7 @@ function AuditLogTab() {
           {logs.map((entry, i) => {
             const meta = ACTION_META[entry.action] ?? { label: entry.action, bg: '#F0E8D8', color: '#7A5C30', Icon: FileText }
             const { Icon } = meta
-            const initials = entry.actor_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()
+            const initials = initialsOf(entry.actor_name)
             const time = new Date(entry.created_at)
             const timeStr = time.toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 

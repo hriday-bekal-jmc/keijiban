@@ -129,13 +129,14 @@ export function useSSE(): void {
           break
 
         // ── Pin / Unpin ───────────────────────────────────────────────────────
-        // Patch is_pinned flag in cache. The pinned banner in PostCard/PostDetail
-        // reads this field, so every user sees the change instantly.
         case 'PIN_POST':
           if (ev.postId && ev.isPinned !== undefined) {
+            // Patch every loaded page in-place — SSE gives us the authoritative value
+            // so no network round-trip needed. invalidateQueries(['posts']) would reset
+            // the infinite query back to page 1, causing blank space for scrolled users.
             patchPostInFeed(queryClient, ev.postId, p => ({ ...p, is_pinned: ev.isPinned }))
             queryClient.invalidateQueries({ queryKey: ['post', ev.postId] })
-            queryClient.invalidateQueries({ queryKey: ['posts', 'pinned'] })
+            queryClient.invalidateQueries({ queryKey: ['pinned-posts'] })
           }
           break
 

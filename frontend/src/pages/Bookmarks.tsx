@@ -6,6 +6,7 @@ import { Bookmark, Calendar, Pin } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
+import { postTypeMeta } from '../lib/postMeta'
 
 // ── shared types ─────────────────────────────────────────────────────────────
 
@@ -24,16 +25,6 @@ interface SavedPost {
   comments_count: number
 }
 
-// ── type badge colors ─────────────────────────────────────────────────────────
-
-const TYPE_COLOR: Record<string, { bg: string; color: string; label: string }> = {
-  ANNOUNCEMENT: { bg: '#FDE8D0', color: '#B84A0E', label: '📢 お知らせ' },
-  KNOWLEDGE:    { bg: '#D8EAF8', color: '#1E5FA8', label: '📚 ナレッジ' },
-  DAILY_REPORT: { bg: '#D6F0E4', color: '#1A7A48', label: '📊 日報' },
-  CHAT:         { bg: '#F0E8F8', color: '#6B35A8', label: '💬 雑談' },
-  DEPARTMENT:   { bg: '#E8F0E0', color: '#2E6818', label: '🏢 部署' },
-}
-
 // ── compact post row ──────────────────────────────────────────────────────────
 
 interface PostRowProps {
@@ -45,7 +36,7 @@ interface PostRowProps {
 function PostRow({ post, action, idx = 0 }: PostRowProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const tc = TYPE_COLOR[post.post_type] ?? TYPE_COLOR.CHAT
+  const tc = postTypeMeta(post.post_type)
 
   return (
     <motion.div
@@ -187,7 +178,7 @@ function EventsTab() {
 
   const EventItem = ({ e, i }: { e: SavedPost; i: number }) => {
     const d = new Date(e.event_date!)
-    const tc = TYPE_COLOR[e.post_type] ?? TYPE_COLOR.CHAT
+    const tc = postTypeMeta(e.post_type)
     const isToday = d.toDateString() === now.toDateString()
 
     return (
@@ -346,8 +337,8 @@ const TABS: { id: TabId; label: string; Icon: typeof Bookmark }[] = [
   { id: 'pinned', label: 'ピン留め', Icon: Pin },
 ]
 
-export default function Bookmarks() {
-  const [tab, setTab] = useState<TabId>('saved')
+export default function Bookmarks({ initialTab = 'saved' }: { initialTab?: TabId }) {
+  const [tab, setTab] = useState<TabId>(initialTab)
 
   return (
     <div className="max-w-[960px] mx-auto px-4 pt-0">

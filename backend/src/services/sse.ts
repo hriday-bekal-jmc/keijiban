@@ -5,13 +5,23 @@ interface SseEvent {
   [key: string]: unknown
 }
 
+const MAX_CONNECTIONS_PER_USER = 5
+
 // In-process SSE manager — PM2 fork mode required (single process, no IPC needed)
 class SSEManager {
   #clients = new Map<string, Set<Response>>() // userId -> Set<res>
 
-  add(userId: string, res: Response): void {
+  add(userId: string, res: Response): boolean {
     if (!this.#clients.has(userId)) this.#clients.set(userId, new Set())
-    this.#clients.get(userId)!.add(res)
+    const set = this.#clients.get(userId)!
+    if (set.size >= MAX_CONNECTIONS_PER_USER) {
+      // Evict the oldest connection before adding the new one
+      const oldest = set.values().next().value as Response
+      try { oldest.end() } catch { /* already closed */ }
+      set.delete(oldest)
+    }
+    set.add(res)
+    return true
   }
 
   remove(userId: string, res: Response): void {

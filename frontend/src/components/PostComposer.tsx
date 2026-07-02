@@ -8,7 +8,6 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import { StarterKit } from '@tiptap/starter-kit'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
-import Link from '@tiptap/extension-link'
 import Highlight from '@tiptap/extension-highlight'
 import Typography from '@tiptap/extension-typography'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -24,15 +23,9 @@ import { Node, Extension, mergeAttributes } from '@tiptap/core'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
-import type { Department } from '../types'
-
-// ── Callout styles (shared with markdown renderer) ─────────────────────────────
-const CALLOUT_STYLES = {
-  info:    { bg: '#D8EAF8', border: '#1E5FA8', text: '#0F3060', icon: 'ℹ️' },
-  warning: { bg: '#FDE8D0', border: '#E8732A', text: '#7A2A00', icon: '⚠️' },
-  success: { bg: '#D6F0E4', border: '#1A7A48', text: '#0A3A20', icon: '✅' },
-  danger:  { bg: '#F8D8D8', border: '#A83030', text: '#5A0000', icon: '🚫' },
-} as const
+import { CALLOUT_STYLES } from '../lib/callouts'
+import { initials as initialsOf } from '../lib/postMeta'
+import type { Department, Post } from '../types'
 
 // ── FontSize mark extension (extends TextStyle) ─────────────────────────────────
 const FontSize = Extension.create({
@@ -364,9 +357,14 @@ function clearDraft() {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-interface PostComposerProps { onClose: () => void }
+interface PostComposerProps {
+  onClose: () => void
+  editPost?: Post
+  onSaved?: (updated: Post) => void
+}
 
-export default function PostComposer({ onClose }: PostComposerProps) {
+export default function PostComposer({ onClose, editPost, onSaved }: PostComposerProps) {
+  const isEdit = !!editPost
   const { user }    = useAuth()
   const queryClient = useQueryClient()
   const toast       = useToast()
@@ -374,13 +372,13 @@ export default function PostComposer({ onClose }: PostComposerProps) {
   const fileInputRef   = useRef<HTMLInputElement>(null)
   const inlineImgRef   = useRef<HTMLInputElement>(null)
 
-  const [type, setType]           = useState('ANNOUNCEMENT')
-  const [visibility, setVis]      = useState('COMPANY_WIDE')
+  const [type, setType]           = useState<string>(editPost?.post_type ?? 'ANNOUNCEMENT')
+  const [visibility, setVis]      = useState<string>(editPost?.visibility_scope ?? 'COMPANY_WIDE')
   const [deptIds, setDeptIds]     = useState<string[]>([])
-  const [title, setTitle]         = useState('')
+  const [title, setTitle]         = useState(editPost?.title ?? '')
   const [tagInput, setTagInput]   = useState('')
-  const [tags, setTags]           = useState<string[]>([])
-  const [eventDate, setEventDate] = useState('')
+  const [tags, setTags]           = useState<string[]>(editPost?.tags ?? [])
+  const [eventDate, setEventDate] = useState(editPost?.event_date ?? '')
   const [files, setFiles]         = useState<File[]>([])
   const [previews, setPreviews]   = useState<string[]>([])
   const [inlineImages, setInlineImages] = useState<{ id: string; dataUrl: string; file: File }[]>([])
@@ -390,10 +388,11 @@ export default function PostComposer({ onClose }: PostComposerProps) {
   const [showSettings, setShowSettings] = useState(false)
   const [bubblePos, setBubblePos] = useState<{ top: number; left: number } | null>(null)
   const [draftStatus, setDraftStatus]   = useState<'saved' | 'saving' | ''>('')
-  // Derived markdown content kept in sync with editor (for draft save etc.)
-  const [content, setContent] = useState(TYPE_OPTIONS[0].template)
+  const [content, setContent] = useState(editPost?.content ?? TYPE_OPTIONS[0].template)
+  const [notifyStep, setNotifyStep]     = useState(false)
+  const [isNotifying, setIsNotifying]   = useState(false)
 
-  const initials = user?.full_name?.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() ?? '?'
+  const initials = initialsOf(user?.full_name)
 
   // Ref so editorProps closures can call the latest insertInlineImage
   const insertInlineImageRef = useRef<(f: File) => void>(() => {})
@@ -401,10 +400,10 @@ export default function PostComposer({ onClose }: PostComposerProps) {
   // ── Tiptap editor ───────────────────────────────────────────────────────────
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      // StarterKit v3 bundles Link — configure it here instead of a separate dep
+      StarterKit.configure({ link: { openOnClick: false, autolink: true } }),
       TaskList,
       TaskItem.configure({ nested: false }),
-      Link.configure({ openOnClick: false, autolink: true }),
       Highlight,
       Typography,
       Placeholder.configure({ placeholder: '内容を入力してください…' }),
@@ -419,7 +418,15 @@ export default function PostComposer({ onClose }: PostComposerProps) {
       FontSize,
       CalloutNode,
     ],
-    content: TYPE_OPTIONS[0].template,
+    content: isEdit ? '' : TYPE_OPTIONS[0].template,
+    onCreate: ({ editor }) => {
+      if (isEdit && editPost?.content) {
+        // Use setContent so tiptap-markdown's override parses markdown properly.
+        // Passing markdown as the useEditor `content:` option bypasses that parser.
+        editor.commands.setContent(editPost.content)
+        setContent(editPost.content)
+      }
+    },
     onUpdate: ({ editor }) => {
       setContent((editor.storage as unknown as Record<string, { getMarkdown: () => string }>).markdown.getMarkdown())
     },
@@ -471,12 +478,14 @@ export default function PostComposer({ onClose }: PostComposerProps) {
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
 
-  // Check draft on mount, focus title
+  // Check draft on mount (skip in edit mode), focus title
   useEffect(() => {
-    const d = loadDraft()
-    if (d) setDraftBanner(d)
+    if (!isEdit) {
+      const d = loadDraft()
+      if (d) setDraftBanner(d)
+    }
     setTimeout(() => titleRef.current?.focus(), 150)
-  }, [])
+  }, [isEdit])
 
   // Revoke preview object URLs on unmount
   useEffect(() => () => { previews.forEach(URL.revokeObjectURL) }, [previews])
@@ -488,9 +497,9 @@ export default function PostComposer({ onClose }: PostComposerProps) {
     return () => window.removeEventListener('keydown', h)
   }, [onClose])
 
-  // Auto-save draft (debounced 2s)
+  // Auto-save draft (debounced 2s, skip in edit mode)
   useEffect(() => {
-    if (!title && !content) return
+    if (isEdit || (!title && !content)) return
     setDraftStatus('saving')
     const t = setTimeout(() => {
       saveDraft({ title, content, type, visibility, deptIds, tags, eventDate })
@@ -498,7 +507,7 @@ export default function PostComposer({ onClose }: PostComposerProps) {
       setTimeout(() => setDraftStatus(''), 2000)
     }, 2000)
     return () => clearTimeout(t)
-  }, [title, content, type, visibility, deptIds, tags, eventDate])
+  }, [isEdit, title, content, type, visibility, deptIds, tags, eventDate])
 
   // ── Data ────────────────────────────────────────────────────────────────────
 
@@ -593,16 +602,69 @@ export default function PostComposer({ onClose }: PostComposerProps) {
   })
 
   const handleSubmit = async () => {
-    if (!title.trim() || !editor || editor.isEmpty || createPost.isPending || isUploading) return
+    if (!title.trim() || !editor || (!isEdit && editor.isEmpty) || createPost.isPending || isUploading) return
     const hasFiles  = files.length > 0
     const hasInline = inlineImages.length > 0
 
-    // Serialize markdown; replace data-URL image srcs with inline:id markers
     let submitContent = (editor.storage as unknown as Record<string, { getMarkdown: () => string }>).markdown.getMarkdown()
     inlineImages.forEach(({ id, dataUrl }) => {
       submitContent = submitContent.split(dataUrl).join(`inline:${id}`)
     })
 
+    // ── EDIT MODE ──────────────────────────────────────────────────────────────
+    if (isEdit && editPost) {
+      try {
+        let finalContent = submitContent
+        setIsUploading(true)
+
+        if (hasInline) {
+          try {
+            const fd = new FormData()
+            inlineImages.forEach(({ file }) => fd.append('files', file))
+            const result = await api.post(`/uploads/${editPost.id}`, fd) as { attachments: Array<{ thumbnail_path: string | null }> }
+            inlineImages.forEach(({ id }, idx) => {
+              const tp = result.attachments?.[idx]?.thumbnail_path
+              if (tp) finalContent = finalContent.replace(new RegExp(`inline:${id}`, 'g'), tp)
+            })
+          } catch { toast.info('インライン画像のアップロードに失敗しました') }
+        }
+
+        if (hasFiles) {
+          try {
+            const fd = new FormData()
+            files.forEach(f => fd.append('files', f))
+            await api.post(`/uploads/${editPost.id}`, fd)
+          } catch { toast.info('添付ファイルのアップロードに失敗しました') }
+        }
+
+        const data = await api.put<{ post: Post }>(`/posts/${editPost.id}`, {
+          title: title.trim(), content: finalContent, tags, event_date: eventDate || null,
+        })
+
+        setIsUploading(false)
+        queryClient.invalidateQueries({ queryKey: ['posts'] })
+        queryClient.invalidateQueries({ queryKey: ['post', editPost.id] })
+        queryClient.invalidateQueries({ queryKey: ['profile-posts'] })
+        toast.success('投稿を保存しました')
+        // Use server-returned post if available; fall back to local state so onSaved always fires
+        const savedPost: Post = data?.post ?? {
+          ...editPost,
+          title: title.trim(),
+          content: finalContent,
+          tags,
+          updated_at: new Date().toISOString(),
+        }
+        onSaved?.(savedPost)
+        setNotifyStep(true)  // stay open and show re-notify prompt
+      } catch (err) {
+        console.error('[PostComposer edit save]', err)
+        setIsUploading(false)
+        toast.error(typeof err === 'string' ? err : '保存に失敗しました')
+      }
+      return
+    }
+
+    // ── CREATE MODE ────────────────────────────────────────────────────────────
     try {
       const data = await createPost.mutateAsync({
         title: title.trim(), content: submitContent, post_type: type,
@@ -646,6 +708,19 @@ export default function PostComposer({ onClose }: PostComposerProps) {
     } catch { setIsUploading(false); toast.error('投稿に失敗しました') }
   }
 
+  const handleNotify = async () => {
+    if (!editPost) return
+    setIsNotifying(true)
+    try {
+      await api.post(`/posts/${editPost.id}/notify`, {})
+      toast.success('通知を再送しました')
+    } catch {
+      toast.error('通知の送信に失敗しました')
+    }
+    setIsNotifying(false)
+    onClose()
+  }
+
   // ── Tags ────────────────────────────────────────────────────────────────────
 
   const addTag = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -660,7 +735,8 @@ export default function PostComposer({ onClose }: PostComposerProps) {
 
   // ── Derived ─────────────────────────────────────────────────────────────────
 
-  const canSubmit = title.trim().length > 0 && editor && !editor.isEmpty && !createPost.isPending && !isUploading
+  const canSubmit = title.trim().length > 0 && editor && (isEdit || !editor.isEmpty) && !createPost.isPending && !isUploading
+  const submitLabel = isUploading ? 'アップロード中…' : (isEdit ? (createPost.isPending ? '保存中…' : '保存する　→') : (createPost.isPending ? '投稿中…' : '投稿する　→'))
   const selectedOpt = TYPE_OPTIONS.find(o => o.id === type)!
   const words = content.trim().split(/[\s\n]+/).filter(Boolean).length
 
@@ -863,8 +939,9 @@ export default function PostComposer({ onClose }: PostComposerProps) {
                 </span>
                 <span>·</span>
                 <span>{visibility === 'COMPANY_WIDE' ? '🌐 全社' : '🏢 部署内'}</span>
-                {draftStatus === 'saved'  && <span className="ml-1 text-[9.5px]" style={{ color: '#1A7A48' }}>✓ 下書き保存済み</span>}
-                {draftStatus === 'saving' && <span className="ml-1 text-[9.5px] text-brand-muted">保存中…</span>}
+                {isEdit && <span className="ml-1 text-[9.5px] font-bold" style={{ color: '#6B35A8' }}>✏️ 編集中</span>}
+                {!isEdit && draftStatus === 'saved'  && <span className="ml-1 text-[9.5px]" style={{ color: '#1A7A48' }}>✓ 下書き保存済み</span>}
+                {!isEdit && draftStatus === 'saving' && <span className="ml-1 text-[9.5px] text-brand-muted">保存中…</span>}
               </div>
             </div>
 
@@ -962,20 +1039,41 @@ export default function PostComposer({ onClose }: PostComposerProps) {
               </div>
 
               {/* Footer */}
-              <div className="flex items-center gap-3 px-5 py-2 flex-shrink-0" style={{ borderTop: '1px solid #F0E8D8' }}>
-                <span className="text-[10.5px] text-brand-muted">{words} 語</span>
-                {files.length > 0    && <span className="text-[10.5px] text-brand-muted">📎 {files.length}件</span>}
-                {inlineImages.length > 0 && <span className="text-[10.5px] text-brand-muted">🖼 {inlineImages.length}枚</span>}
-                <div className="flex-1" />
-                <button
-                  onClick={handleSubmit}
-                  disabled={!canSubmit}
-                  className="px-6 py-2.5 rounded-full text-[13px] font-extrabold text-white transition-all active:scale-95 disabled:opacity-40"
-                  style={{ background: canSubmit ? '#3A2A1A' : '#A8906E' }}
-                >
-                  {isUploading ? 'アップロード中…' : createPost.isPending ? '投稿中…' : '投稿する　→'}
-                </button>
-              </div>
+              {notifyStep ? (
+                <div className="flex items-center gap-3 px-5 py-3 flex-shrink-0" style={{ borderTop: '1px solid #F0E8D8', background: '#FDE8D0' }}>
+                  <span className="text-[13px] font-semibold text-brand-dark flex-1">編集しました！通知を再送しますか？</span>
+                  <button
+                    onClick={onClose}
+                    className="px-4 py-2 rounded-full text-[12px] font-bold"
+                    style={{ color: '#A8906E' }}
+                  >
+                    スキップ
+                  </button>
+                  <button
+                    onClick={handleNotify}
+                    disabled={isNotifying}
+                    className="px-5 py-2 rounded-full text-[13px] font-extrabold text-white transition-all active:scale-95 disabled:opacity-60"
+                    style={{ background: '#E8732A' }}
+                  >
+                    {isNotifying ? '送信中…' : '通知を送る'}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 px-5 py-2 flex-shrink-0" style={{ borderTop: '1px solid #F0E8D8' }}>
+                  <span className="text-[10.5px] text-brand-muted">{words} 語</span>
+                  {files.length > 0    && <span className="text-[10.5px] text-brand-muted">📎 {files.length}件</span>}
+                  {inlineImages.length > 0 && <span className="text-[10.5px] text-brand-muted">🖼 {inlineImages.length}枚</span>}
+                  <div className="flex-1" />
+                  <button
+                    onClick={handleSubmit}
+                    disabled={!canSubmit}
+                    className="px-6 py-2.5 rounded-full text-[13px] font-extrabold text-white transition-all active:scale-95 disabled:opacity-40"
+                    style={{ background: canSubmit ? '#3A2A1A' : '#A8906E' }}
+                  >
+                    {submitLabel}
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* ── Settings sidebar (desktop) ── */}

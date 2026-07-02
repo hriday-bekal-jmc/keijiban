@@ -1,14 +1,153 @@
 import { useState, useEffect, useRef } from 'react'
-import { useInfiniteQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
+import { Calendar, Pin } from 'lucide-react'
 import { api } from '../lib/api'
 import PostCard from '../components/PostCard'
 import { PostCardSkeleton } from '../components/Skeletons'
 import { useAuth } from '../contexts/AuthContext'
 import { useReadPosts } from '../hooks/useReadPosts'
+import { postTypeColor, initials as initialsOf } from '../lib/postMeta'
 import type { User } from '../contexts/AuthContext'
 import type { Post } from '../types'
+
+// ── Monthly events types + helpers ──────────────────────────────────────────
+
+interface EventPost {
+  id: string
+  title: string
+  post_type: string
+  event_date: string
+  author_name: string
+}
+
+const EVENTS_PAGE = 4
+
+function MonthlyEventsCard({ events, onEventsMore }: { events: EventPost[]; onEventsMore?: () => void }) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const now = new Date()
+  const visible = events.slice(0, EVENTS_PAGE)
+  const hasMore = events.length > EVENTS_PAGE
+
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', boxShadow: '0 2px 10px rgba(58,42,26,0.06)' }}>
+      <div className="flex items-center justify-between px-3.5 py-2.5" style={{ background: '#FDE8D0', borderBottom: '1px solid #F0C898' }}>
+        <div className="flex items-center gap-1.5">
+          <Calendar size={13} color="#E8732A" strokeWidth={2.5} />
+          <span className="font-extrabold text-[12px] text-brand-dark">今月の予定</span>
+        </div>
+        <span className="text-[10.5px] font-bold" style={{ color: '#C05A18' }}>
+          {now.toLocaleDateString('ja-JP', { month: 'long' })}
+        </span>
+      </div>
+      <div>
+        {visible.map((ev, i) => {
+          const d = new Date(ev.event_date)
+          const isPast = d < now
+          return (
+            <div
+              key={ev.id}
+              onClick={() => {
+                const bg = (location.state as { background?: unknown } | null)?.background
+                navigate(`/posts/${ev.id}`, { state: { background: bg ?? location } })
+              }}
+              className="flex items-start gap-2.5 px-3.5 py-2.5 cursor-pointer"
+              style={{ borderTop: i > 0 ? '1px solid #F4EDDA' : undefined, opacity: isPast ? 0.5 : 1 }}
+            >
+              <div className="flex-shrink-0 text-right" style={{ minWidth: 34 }}>
+                <div className="font-extrabold text-[11px]" style={{ color: '#E8732A' }}>
+                  {d.toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })}
+                </div>
+                <div className="text-[9.5px]" style={{ color: '#A8906E' }}>
+                  {d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
+                </div>
+              </div>
+              <div className="w-px self-stretch flex-shrink-0" style={{ background: '#E4D4B8' }} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1 mb-0.5">
+                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: postTypeColor(ev.post_type) }} />
+                  <div className="font-extrabold text-[11.5px] text-brand-dark truncate">{ev.title}</div>
+                </div>
+                <div className="text-[10px] truncate" style={{ color: '#A8906E' }}>{ev.author_name}</div>
+              </div>
+            </div>
+          )
+        })}
+        {hasMore && (
+          <button
+            onClick={onEventsMore}
+            className="w-full px-3.5 py-2.5 text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
+            style={{ borderTop: '1px solid #F4EDDA', color: '#E8732A' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#FDE8D0' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+          >
+            すべて見る（{events.length}件） →
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function EmptyEventsCard() {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+      className="flex flex-col items-center py-8 rounded-2xl"
+      style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
+    >
+      <div className="flex items-center gap-1.5 mb-4 w-full px-3.5">
+        <Calendar size={13} color="#E8732A" strokeWidth={2.5} />
+        <span className="font-extrabold text-[12px] text-brand-dark">今月の予定</span>
+      </div>
+      <motion.div
+        animate={{ y: [0, -5, 0] }}
+        transition={{ repeat: Infinity, duration: 3.5, ease: 'easeInOut' }}
+      >
+        <svg width="44" height="44" viewBox="0 0 56 56" fill="none">
+          <rect x="6" y="10" width="44" height="40" rx="6" fill="#FDE8D0" />
+          <rect x="6" y="10" width="44" height="14" rx="6" fill="#E8732A" />
+          <rect x="6" y="18" width="44" height="6" fill="#E8732A" />
+          <rect x="16" y="6" width="5" height="9" rx="2.5" fill="#C05A18" />
+          <rect x="35" y="6" width="5" height="9" rx="2.5" fill="#C05A18" />
+          <circle cx="17" cy="32" r="2.5" fill="#F0C898" opacity="0.7" />
+          <circle cx="28" cy="32" r="2.5" fill="#F0C898" opacity="0.7" />
+          <circle cx="39" cy="32" r="2.5" fill="#F0C898" opacity="0.7" />
+          <circle cx="17" cy="42" r="2.5" fill="#F0C898" opacity="0.4" />
+          <circle cx="28" cy="42" r="2.5" fill="#F0C898" opacity="0.4" />
+          <circle cx="39" cy="42" r="2.5" fill="#F0C898" opacity="0.4" />
+        </svg>
+      </motion.div>
+      <motion.p
+        animate={{ opacity: [0.55, 1, 0.55] }}
+        transition={{ repeat: Infinity, duration: 2.8, ease: 'easeInOut' }}
+        className="font-extrabold text-[12px] text-brand-dark mt-3"
+      >
+        今月の予定はありません
+      </motion.p>
+    </motion.div>
+  )
+}
+
+function useMonthlyEvents() {
+  const { data } = useQuery<{ events: EventPost[] }>({
+    queryKey: ['monthly-events'],
+    queryFn: () => api.get('/bookmarks/events'),
+    staleTime: 5 * 60 * 1000,
+  })
+  const now = new Date()
+  const events = (data?.events ?? [])
+    .filter(p => {
+      const d = new Date(p.event_date)
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
+    })
+    .sort((a, b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime())
+  return { events, loaded: data !== undefined }
+}
 
 // ── Filter chips ────────────────────────────────────────────────────────────
 const FILTER_OPTIONS = [
@@ -29,7 +168,7 @@ const FILTER_SPRING = { type: 'spring', stiffness: 480, damping: 30, mass: 0.7 }
 
 function FilterChips({ active, onChange }: FilterChipsProps) {
   return (
-    <div className="flex gap-1.5 overflow-x-auto pb-1 mb-3.5" style={{ scrollbarWidth: 'none' }}>
+    <div className="scroll-touch flex gap-1.5 overflow-x-auto pb-1 mb-3.5" style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}>
       {FILTER_OPTIONS.map(({ id, label }) => {
         const isActive = active === id
         return (
@@ -110,14 +249,14 @@ function StoriesBar({ posts, read, onRead }: StoriesBarProps) {
 
   return (
     <div
-      className="p-3 mb-3.5 overflow-x-auto"
-      style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', borderRadius: 12, scrollbarWidth: 'none' }}
+      className="scroll-touch p-3 mb-3.5 overflow-x-auto"
+      style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', borderRadius: 12, scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}
     >
       <div className="flex gap-4 items-flex-start w-max">
         <AnimatePresence initial={false}>
           {visible.map(([authorId, { name, color, posts: ps }]) => {
             const unreadCount = ps.filter(p => !read.has(p.id)).length
-            const initials = name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase() ?? '?'
+            const initials = initialsOf(name)
             return (
               <motion.div
                 key={authorId}
@@ -169,42 +308,137 @@ function StoriesBar({ posts, read, onRead }: StoriesBarProps) {
   )
 }
 
+// ── Sidebar data hooks ────────────────────────────────────────────────────────
+
+interface VibingUser {
+  id: string
+  full_name: string
+  avatar_url: string | null
+  vibe_emoji: string
+  vibe_label: string | null
+}
+
+function usePinnedPosts() {
+  const { data } = useQuery<{ posts: Post[] }>({
+    queryKey: ['pinned-posts'],
+    queryFn: () => api.get('/posts/pinned'),
+    staleTime: 5 * 60 * 1000,
+  })
+  return data?.posts ?? []
+}
+
+function useVibingUsers() {
+  const { data } = useQuery<{ users: VibingUser[] }>({
+    queryKey: ['vibing-users'],
+    queryFn: () => api.get('/users/vibing'),
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+  })
+  return data?.users ?? []
+}
+
 // ── Right sidebar ────────────────────────────────────────────────────────────
 interface SidebarProps {
   user: User | null | undefined
   posts: Post[]
   onTagClick: (tag: string) => void
+  onEventsMore?: () => void
 }
 
-function Sidebar({ user, posts, onTagClick }: SidebarProps) {
+function Sidebar({ user, posts, onTagClick, onEventsMore }: SidebarProps) {
   const tagCounts: Record<string, number> = {}
   posts.forEach((p: Post) => p.tags?.forEach((t: string) => { tagCounts[t] = (tagCounts[t] || 0) + 1 }))
   const trending = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([t]) => t)
 
-  const initials = user?.full_name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase() ?? '?'
+  const initials = initialsOf(user?.full_name)
+  const { events, loaded } = useMonthlyEvents()
+  const pinnedPosts = usePinnedPosts()
+  const vibingUsers = useVibingUsers()
+  const navigate = useNavigate()
+  const location = useLocation()
 
   return (
-    <div className="hidden lg:flex flex-col w-64 gap-4 pt-0 flex-shrink-0">
+    <div className="hidden lg:flex flex-col w-64 gap-4 pt-[62px] flex-shrink-0">
 
       {/* Profile widget */}
-      <div className="p-4 rounded-2xl" style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}>
-        <div className="flex items-center gap-3 mb-4">
+      <div className="rounded-2xl overflow-hidden" style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}>
+        {/* Vibe / mood */}
+        {user?.vibe_emoji && (
+          <div className="px-4 pt-3.5 pb-3">
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: '#FDE8D0' }}>
+              <span className="text-[18px] leading-none">{user.vibe_emoji}</span>
+              <span className="text-[12px] font-bold truncate" style={{ color: '#C05A18' }}>{user.vibe_label ?? '気分を設定中'}</span>
+            </div>
+          </div>
+        )}
+        {/* Divider — only when vibe shown */}
+        {user?.vibe_emoji && <div style={{ height: 1, background: '#F4EDDA', marginInline: 16 }} />}
+        {/* Identity */}
+        <div className="flex items-center gap-3 p-4">
           {user?.avatar_url ? (
-            <img src={user.avatar_url} alt={user.full_name ?? ''} className="w-12 h-12 rounded-2xl object-cover flex-shrink-0" />
+            <img src={user.avatar_url} alt={user.full_name ?? ''} className="w-11 h-11 rounded-2xl object-cover flex-shrink-0" />
           ) : (
             <div
-              className="w-12 h-12 rounded-2xl flex items-center justify-center text-white font-extrabold text-[13px] flex-shrink-0"
+              className="w-11 h-11 rounded-2xl flex items-center justify-center text-white font-extrabold text-[13px] flex-shrink-0"
               style={{ background: 'linear-gradient(135deg, #E87040, #F5A460)' }}
             >
               {initials}
             </div>
           )}
-          <div>
-            <div className="font-bold text-brand-dark text-[13px]">{user?.full_name}</div>
-            <div className="text-brand-muted text-[11px]">{user?.department_name}</div>
+          <div className="min-w-0">
+            <div className="font-bold text-brand-dark text-[13px] truncate">{user?.full_name}</div>
+            <div className="text-brand-muted text-[11px] truncate">{user?.department_name}</div>
           </div>
         </div>
       </div>
+
+      {/* Pinned announcements */}
+      {pinnedPosts.length > 0 && (
+        <div className="rounded-2xl overflow-hidden" style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}>
+          <div className="flex items-center gap-1.5 px-3.5 py-2.5" style={{ background: '#FDE8D0', borderBottom: '1px solid #F0C898' }}>
+            <Pin size={12} color="#B84A0E" strokeWidth={2.5} />
+            <span className="font-extrabold text-[12px] text-brand-dark">ピン留め</span>
+          </div>
+          {pinnedPosts.slice(0, 4).map((p, i) => (
+            <button
+              key={p.id}
+              onClick={() => navigate(`/posts/${p.id}`, { state: { background: location } })}
+              className="w-full flex flex-col items-start px-3.5 py-2.5 text-left transition-colors hover:bg-[#FDE8D0]"
+              style={{ borderTop: i > 0 ? '1px solid #F4EDDA' : undefined }}
+            >
+              <div className="font-bold text-[12px] text-brand-dark leading-snug line-clamp-2">{p.title}</div>
+              <div className="text-[10.5px] mt-0.5" style={{ color: '#A8906E' }}>{p.author_name}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Who's vibing */}
+      {vibingUsers.length > 0 && (
+        <div className="rounded-2xl overflow-hidden" style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}>
+          <div className="flex items-center gap-1.5 px-3.5 py-2.5" style={{ background: '#F0E8F8', borderBottom: '1px solid #E4D4B8' }}>
+            <span className="text-[13px]">✨</span>
+            <span className="font-extrabold text-[12px] text-brand-dark">今日のバイブ</span>
+          </div>
+          <div className="flex flex-col">
+            {vibingUsers.slice(0, 6).map((u, i) => (
+              <div
+                key={u.id}
+                className="flex items-center gap-2.5 px-3.5 py-2"
+                style={{ borderTop: i > 0 ? '1px solid #F4EDDA' : undefined }}
+              >
+                <span className="text-[18px] leading-none flex-shrink-0">{u.vibe_emoji}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-[11.5px] text-brand-dark truncate">{u.full_name.split(' ')[0]}</div>
+                  {u.vibe_label && (
+                    <div className="text-[10.5px] truncate" style={{ color: '#A8906E' }}>{u.vibe_label}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Trending tags */}
       {trending.length > 0 && (
@@ -230,19 +464,10 @@ function Sidebar({ user, posts, onTagClick }: SidebarProps) {
         </div>
       )}
 
-      {/* System status */}
-      <div className="p-4 rounded-2xl" style={{ background: 'linear-gradient(135deg, #FDE8D0, #FFF5EA)', border: '1px solid #F0C898' }}>
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="font-bold text-[13px]" style={{ color: '#C05A18' }}>システム状態</span>
-          <span className="relative flex h-3 w-3">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500" />
-          </span>
-        </div>
-        <p className="text-[11.5px] font-semibold" style={{ color: '#C05A18', opacity: 0.8 }}>
-          全サービス正常 · SSE接続中
-        </p>
-      </div>
+      {/* Monthly events */}
+      {loaded && events.length > 0 && <MonthlyEventsCard events={events} onEventsMore={onEventsMore} />}
+      {loaded && events.length === 0 && <EmptyEventsCard />}
+
     </div>
   )
 }
@@ -261,13 +486,13 @@ interface PostsPage {
 // ── Feed props ───────────────────────────────────────────────────────────────
 interface FeedProps {
   searchQuery?: string
-  activeTab?: string
   onCompose?: () => void
+  onEventsMore?: () => void
 }
 
 // ── Feed ─────────────────────────────────────────────────────────────────────
 
-export default function Feed({ searchQuery = '', activeTab, onCompose }: FeedProps) {
+export default function Feed({ searchQuery = '', onCompose, onEventsMore }: FeedProps) {
   const [viewMode, setViewMode] = useState<string>('scroll')
   const [activeFilter, setActiveFilter] = useState<string>('all')
   const [searchParams, setSearchParams] = useSearchParams()
@@ -275,6 +500,9 @@ export default function Feed({ searchQuery = '', activeTab, onCompose }: FeedPro
   const queryClient = useQueryClient()
   const { user } = useAuth()
   const { read, markRead } = useReadPosts()
+  const { events: monthlyEvents, loaded: eventsLoaded } = useMonthlyEvents()
+  const navigate = useNavigate()
+  const location = useLocation()
   const sentinelRef = useRef<HTMLDivElement>(null)
 
   const newPostsAvailable = queryClient.getQueryData<boolean>(['newPostsAvailable'])
@@ -301,21 +529,21 @@ export default function Feed({ searchQuery = '', activeTab, onCompose }: FeedPro
 
   const posts: Post[] = data?.pages.flatMap((p: PostsPage) => p.posts) ?? []
 
-  // Infinite scroll — trigger fetchNextPage when sentinel enters viewport
+  // Infinite scroll — trigger fetchNextPage when sentinel enters viewport.
+  // Dep array is [fetchNextPage] only (stable ref from React Query).
+  // RQ's fetchNextPage returns early when hasNextPage=false or a fetch is in-flight,
+  // so adding those to deps would recreate the observer on every state change and
+  // fire it immediately, causing rapid page exhaustion without user scrolling.
   useEffect(() => {
     const sentinel = sentinelRef.current
     if (!sentinel) return
     const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting && hasNextPage && !isFetchingNextPage) {
-          fetchNextPage()
-        }
-      },
+      ([entry]) => { if (entry.isIntersecting) fetchNextPage() },
       { rootMargin: '200px' }
     )
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage])
+  }, [fetchNextPage])
 
   return (
     <div className="max-w-[960px] mx-auto px-4 pt-0 flex gap-6 items-start">
@@ -404,6 +632,39 @@ export default function Feed({ searchQuery = '', activeTab, onCompose }: FeedPro
           <FilterChips active={activeFilter} onChange={setActiveFilter} />
         </motion.div>
 
+        {/* Events strip — compact chips below filters, mobile only */}
+        {eventsLoaded && monthlyEvents.length > 0 && (
+          <div className="lg:hidden flex items-center gap-2 mb-3 overflow-x-auto pb-0.5" style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <Calendar size={11} color="#E8732A" strokeWidth={2.5} />
+              <span className="text-[10.5px] font-extrabold flex-shrink-0" style={{ color: '#C05A18' }}>予定</span>
+            </div>
+            <div className="w-px h-3 flex-shrink-0" style={{ background: '#E4D4B8' }} />
+            {monthlyEvents.map(ev => {
+              const d = new Date(ev.event_date)
+              const isPast = d < new Date()
+              return (
+                <button
+                  key={ev.id}
+                  onClick={() => navigate(`/posts/${ev.id}`, { state: { background: location } })}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold flex-shrink-0"
+                  style={{
+                    background: isPast ? '#F4EDDA' : '#FDE8D0',
+                    color: isPast ? '#A8906E' : '#C05A18',
+                    border: `1px solid ${isPast ? '#E4D4B8' : '#F0C898'}`,
+                    opacity: isPast ? 0.7 : 1,
+                  }}
+                >
+                  <span style={{ color: isPast ? '#A8906E' : '#E8732A' }}>
+                    {d.toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })}
+                  </span>
+                  <span className="max-w-[90px] truncate">{ev.title}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         {/* Active tag filter pill */}
         {tagFilter && (
           <div className="flex items-center gap-2 mb-3 -mt-1">
@@ -473,7 +734,7 @@ export default function Feed({ searchQuery = '', activeTab, onCompose }: FeedPro
                       ease: [0.25, 0.46, 0.45, 0.94],
                     }}
                   >
-                    <PostCard post={post} viewMode="scroll" idx={i} onRead={markRead} />
+                    <PostCard post={post} viewMode="scroll" onRead={markRead} />
                   </motion.div>
                 ))}
               </div>
@@ -495,7 +756,7 @@ export default function Feed({ searchQuery = '', activeTab, onCompose }: FeedPro
                     ease: [0.25, 0.46, 0.45, 0.94],
                   }}
                 >
-                  <PostCard post={post} viewMode="board" idx={i} onRead={markRead} />
+                  <PostCard post={post} viewMode="board" onRead={markRead} />
                 </motion.div>
               ))}
             </motion.div>
@@ -520,7 +781,7 @@ export default function Feed({ searchQuery = '', activeTab, onCompose }: FeedPro
       </div>
 
       {/* ── Right sidebar ── */}
-      <Sidebar user={user} posts={posts} onTagClick={(tag) => setSearchParams({ tag })} />
+      <Sidebar user={user} posts={posts} onTagClick={(tag) => setSearchParams({ tag })} onEventsMore={onEventsMore} />
     </div>
   )
 }

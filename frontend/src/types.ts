@@ -4,8 +4,19 @@ export interface User {
   full_name: string
   avatar_url: string | null
   role: 'member' | 'admin'
+  can_post: boolean
   department_id: string
   department_name: string
+  email_notifications?: boolean
+  in_app_notifications?: boolean
+  notif_new_post_email?: boolean
+  notif_new_post_chat?: boolean
+  notif_comment_email?: boolean
+  notif_comment_chat?: boolean
+  notif_like_email?: boolean
+  notif_like_chat?: boolean
+  vibe_emoji: string | null
+  vibe_label: string | null
 }
 
 export interface Post {
@@ -23,6 +34,8 @@ export interface Post {
   author_dept: string
   likes_count: number
   comments_count: number
+  views_count: number
+  top_viewers: Array<{ id: string; avatar_url: string | null }>
   liked_by_me: boolean
   is_bookmarked_by_me: boolean
   event_date: string | null

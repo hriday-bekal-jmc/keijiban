@@ -1,6 +1,7 @@
 import { google } from 'googleapis'
 import { Readable } from 'stream'
 import sharp from 'sharp'
+import { fileTypeFromBuffer } from 'file-type'
 import { env } from '../config/env.js'
 
 const ALLOWED_MIME = new Set([
@@ -14,23 +15,18 @@ const ALLOWED_MIME = new Set([
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ])
 
-const MIME_LABELS: Record<string, string> = {
-  'application/pdf': 'PDF',
-  'application/msword': 'Word',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word',
-  'application/vnd.ms-excel': 'Excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel',
-  'application/vnd.ms-powerpoint': 'PowerPoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint',
-}
-
-export function isAllowedMime(mimeType: string): boolean {
-  return ALLOWED_MIME.has(mimeType)
-}
-
-export function mimeLabel(mimeType: string): string {
-  return MIME_LABELS[mimeType] ?? mimeType.split('/')[1] ?? 'File'
-}
+// Magic-byte signatures the detected content may legitimately have.
+// OOXML (docx/xlsx/pptx) detects as its exact mime or generic zip;
+// legacy Office (doc/xls/ppt) detects as CFB. Images must detect as images
+// (sharp re-encodes them anyway, which is the stronger guarantee).
+const DETECTED_OK = new Set([
+  'application/pdf',
+  'application/zip',
+  'application/x-cfb',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+])
 
 function getDrive() {
   if (!env.googleServiceAccountKey) throw new Error('Drive not configured')
@@ -61,10 +57,18 @@ export async function uploadFile(
   originalFilename: string,
   mimeType: string
 ): Promise<DriveUploadResult> {
-  if (!isAllowedMime(mimeType)) throw new Error(`File type not allowed: ${mimeType}`)
+  if (!ALLOWED_MIME.has(mimeType)) throw new Error(`File type not allowed: ${mimeType}`)
+
+  // Never trust the client's Content-Type — verify the actual bytes.
+  const isImage = mimeType.startsWith('image/')
+  const detected = await fileTypeFromBuffer(buffer)
+  if (isImage) {
+    if (!detected?.mime.startsWith('image/')) throw new Error('File content is not an image')
+  } else if (!detected || !DETECTED_OK.has(detected.mime)) {
+    throw new Error(`File content does not match declared type: ${mimeType}`)
+  }
 
   const drive = getDrive()
-  const isImage = mimeType.startsWith('image/')
 
   let uploadBuffer = buffer
   let uploadMime = mimeType

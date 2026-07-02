@@ -30,8 +30,9 @@ const PILL_SPRING = { type: 'spring', stiffness: 500, damping: 32, mass: 0.8 } a
 export default function Navigation({ activeTab, setActiveTab, unreadCount, onCompose, canPost = true }: NavigationProps) {
   return (
     <div
-      className="fixed bottom-7 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 px-2 py-1.5 rounded-full"
+      className="fixed left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 px-2 py-1.5 rounded-full"
       style={{
+        bottom: 'calc(1.75rem + env(safe-area-inset-bottom, 0px))',
         background: '#FFFDF7',
         border: '1px solid #E4D4B8',
         boxShadow: '0 8px 32px rgba(60,30,10,0.14)',

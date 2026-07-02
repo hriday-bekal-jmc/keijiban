@@ -49,6 +49,7 @@ export function parseMultipart(
     })
 
     bb.on('error', reject)
+    req.on('error', reject)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     req.pipe(bb as any)
   })

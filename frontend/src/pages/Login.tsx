@@ -16,12 +16,14 @@ export default function Login() {
       if (!window.google?.accounts?.id || !buttonRef.current) return
       window.google.accounts.id.initialize({
         client_id: GOOGLE_CLIENT_ID,
+        auto_select: false,
+        cancel_on_tap_outside: true,
         callback: async ({ credential }: { credential: string }) => {
           setError(null)
           setLoading(true)
           try {
-            const { user } = await api.post<{ user: Parameters<typeof login>[0] }>('/auth/google', { idToken: credential })
-            login(user)
+            await api.post('/auth/google', { idToken: credential })
+            login()
           } catch (err) {
             console.error('Login failed:', err)
             setError(typeof err === 'string' ? err : 'ログインに失敗しました。もう一度お試しください。')
@@ -37,8 +39,20 @@ export default function Login() {
         locale: 'ja',
       })
     }
-    if (window.google) init()
-    else window.addEventListener('load', init, { once: true })
+
+    // The Google GSI script is async — the 'load' event has already fired
+    // by the time React mounts in a Vite SPA, so we poll instead.
+    if (window.google) {
+      init()
+      return () => { window.google?.accounts?.id?.cancel?.() }
+    }
+    const poll = setInterval(() => {
+      if (window.google) { clearInterval(poll); init() }
+    }, 50)
+    return () => {
+      clearInterval(poll)
+      window.google?.accounts?.id?.cancel?.()
+    }
   }, [login])
 
   return (
@@ -60,14 +74,23 @@ export default function Login() {
           <p className="text-brand-muted text-[13px] mt-1">JMC 社内掲示板</p>
         </div>
 
-        {loading ? (
-          <div className="flex items-center gap-2 text-brand-muted text-[13px]">
-            <div className="w-4 h-4 border-2 border-brand-orange border-t-transparent rounded-full animate-spin" />
-            サインイン中…
-          </div>
-        ) : (
+        {/* Keep button div always mounted so Google SDK never loses its container.
+            Overlay the spinner so the button re-appears immediately after failure. */}
+        <div style={{ position: 'relative', minHeight: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div ref={buttonRef} />
-        )}
+          {loading && (
+            <div
+              style={{
+                position: 'absolute', inset: 0,
+                background: '#FFFDF7',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+              }}
+            >
+              <div className="w-4 h-4 border-2 border-brand-orange border-t-transparent rounded-full animate-spin" />
+              <span className="text-brand-muted text-[13px]">サインイン中…</span>
+            </div>
+          )}
+        </div>
 
         {error && (
           <div className="w-full px-4 py-3 rounded-xl text-[12.5px] font-semibold text-center"

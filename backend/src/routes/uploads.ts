@@ -3,7 +3,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { env } from '../config/env.js'
 import { parseMultipart } from '../lib/parseMultipart.js'
 import { uploadFile, streamFile } from '../services/drive.js'
-import { query } from '../config/db.js'
+import { query, visibilitySQL } from '../config/db.js'
 import type { RequestWithUser } from '../types.js'
 
 const router = Router()
@@ -60,14 +60,28 @@ router.post('/:postId', requireAuth, async (req: Request, res: Response, next: N
 })
 
 // GET /api/uploads/:driveFileId/content — proxy Drive file to authenticated user
+// Visibility check: only serve the file if the requesting user can see the post it belongs to.
 router.get('/:driveFileId/content', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!env.googleServiceAccountKey) {
       return res.status(503).json({ error: 'Drive not configured' })
     }
+
+    const { id: userId, departmentId } = (req as RequestWithUser).user
+
+    const { rows } = await query(
+      `SELECT a.id FROM attachments a
+       JOIN posts p ON p.id = a.post_id AND p.deleted_at IS NULL
+       WHERE a.drive_file_id = $1 AND ${visibilitySQL(2, 3)}`,
+      [req.params.driveFileId, userId, departmentId]
+    )
+
+    if (!rows[0]) return res.status(404).json({ error: 'File not found' })
+
     const { stream, mimeType } = await streamFile(req.params.driveFileId as string)
     res.setHeader('Content-Type', mimeType)
     res.setHeader('Cache-Control', 'private, max-age=86400')
+    stream.on('error', next)
     stream.pipe(res)
   } catch (err) {
     next(err)

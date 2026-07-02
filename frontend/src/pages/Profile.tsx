@@ -5,6 +5,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { Settings, X, Heart, MessageCircle, Pin, Camera, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
+import { postTypeColor, initials as initialsOf } from '../lib/postMeta'
 
 // ── Vibe presets ──────────────────────────────────────────────────────────────
 
@@ -29,10 +30,19 @@ const VIBES = [
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface UpdateUserPayload {
-  full_name: string
+interface NotifPrefs {
   email_notifications: boolean
   in_app_notifications: boolean
+  notif_new_post_email: boolean
+  notif_new_post_chat: boolean
+  notif_comment_email: boolean
+  notif_comment_chat: boolean
+  notif_like_email: boolean
+  notif_like_chat: boolean
+}
+
+interface UpdateUserPayload extends NotifPrefs {
+  full_name: string
 }
 
 interface UserStats {
@@ -53,23 +63,7 @@ interface ProfilePost {
   is_pinned: boolean
 }
 
-interface UserWithNotifPrefs {
-  email_notifications?: boolean
-  in_app_notifications?: boolean
-  vibe_emoji?: string | null
-  vibe_label?: string | null
-  [key: string]: unknown
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-const TYPE_COLOR: Record<string, string> = {
-  ANNOUNCEMENT: '#B84A0E',
-  KNOWLEDGE:    '#1E5FA8',
-  DAILY_REPORT: '#1A7A48',
-  CHAT:         '#6B35A8',
-  DEPARTMENT:   '#2E6818',
-}
 
 // ── Toggle ────────────────────────────────────────────────────────────────────
 
@@ -165,27 +159,33 @@ function VibePicker({ current, onClose, onSet, onClear }: VibePickerProps) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function Profile() {
-  const { user: _user, logout, refreshUser } = useAuth()
-  const user = _user as (typeof _user & UserWithNotifPrefs)
+  const { user, logout, refreshUser } = useAuth()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
 
   const [showSettings, setShowSettings] = useState(false)
   const [showVibePicker, setShowVibePicker] = useState(false)
-  const [name, setName]    = useState<string>(user?.full_name ?? '')
-  const [emailNotif, setEmail] = useState<boolean>(user?.email_notifications ?? true)
-  const [inAppNotif, setInApp] = useState<boolean>(user?.in_app_notifications ?? true)
-  const [saved, setSaved]  = useState(false)
+  const [name, setName] = useState<string>(user?.full_name ?? '')
+  const [prefs, setPrefs] = useState<NotifPrefs>({
+    email_notifications:  user?.email_notifications  ?? true,
+    in_app_notifications: user?.in_app_notifications ?? true,
+    notif_new_post_email: user?.notif_new_post_email ?? true,
+    notif_new_post_chat:  user?.notif_new_post_chat  ?? true,
+    notif_comment_email:  user?.notif_comment_email  ?? true,
+    notif_comment_chat:   user?.notif_comment_chat   ?? true,
+    notif_like_email:     user?.notif_like_email     ?? true,
+    notif_like_chat:      user?.notif_like_chat      ?? true,
+  })
+  const [saved, setSaved] = useState(false)
   const [avatarHover, setAvatarHover] = useState(false)
   const avatarInputRef = useRef<HTMLInputElement>(null)
 
-  // Optimistic local vibe state
   const [vibeEmoji, setVibeEmoji] = useState<string | null>(user?.vibe_emoji ?? null)
   const [vibeLabel, setVibeLabel] = useState<string | null>(user?.vibe_label ?? null)
 
-  const initials = user?.full_name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase() ?? '?'
-  const avatarUrl: string | null = (user as unknown as { avatar_url?: string | null })?.avatar_url ?? null
+  const initials = initialsOf(user?.full_name)
+  const avatarUrl: string | null = user?.avatar_url ?? null
   const hasCustomAvatar = !!avatarUrl && !avatarUrl.startsWith('https://lh3.googleusercontent.com') && !avatarUrl.startsWith('https://lh')
 
   // Stats
@@ -201,13 +201,15 @@ export default function Profile() {
     queryFn: () => api.get('/users/me/posts?limit=24'),
     staleTime: 0,
   })
-  const myPosts = postsData?.posts ?? []
+  const myPosts: ProfilePost[] = postsData?.posts ?? []
 
   // Mutations
   const update = useMutation<unknown, Error, UpdateUserPayload>({
     mutationFn: (data) => api.put('/users/me', data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['me'] })
+      // AuthContext stores user in useState, not React Query — call refreshUser()
+      // to re-fetch /auth/me so the header name updates immediately.
+      refreshUser()
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     },
@@ -216,13 +218,13 @@ export default function Profile() {
   const setVibe = useMutation<unknown, Error, { emoji: string; label: string }>({
     mutationFn: ({ emoji, label }) => api.put('/users/me/vibe', { emoji, label }),
     onMutate: ({ emoji, label }) => { setVibeEmoji(emoji); setVibeLabel(label) },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['me'] }),
+    onSettled: () => refreshUser(),
   })
 
   const clearVibe = useMutation<unknown, Error, void>({
     mutationFn: () => api.delete('/users/me/vibe'),
     onMutate: () => { setVibeEmoji(null); setVibeLabel(null) },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['me'] }),
+    onSettled: () => refreshUser(),
   })
 
   const uploadAvatar = useMutation<{ avatar_url: string }, Error, File>({
@@ -244,6 +246,10 @@ export default function Profile() {
       refreshUser()
       if (user?.id) queryClient.invalidateQueries({ queryKey: ['user-preview', user.id] })
     },
+  })
+
+  const logoutAll = useMutation<{ ok: boolean; sessionsRevoked: number }, Error, void>({
+    mutationFn: () => api.post('/auth/logout-all'),
   })
 
   const handleAvatarFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -457,35 +463,112 @@ export default function Profile() {
               </div>
 
               {/* Notifications */}
-              <div className="p-4 rounded-2xl" style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}>
-                <div className="font-extrabold text-brand-dark text-[13px] mb-3">通知設定</div>
-                {[
-                  { label: 'メール通知', sub: '新しい投稿をメールでお知らせ', value: emailNotif, toggle: () => setEmail(v => !v) },
-                  { label: 'アプリ内通知', sub: 'リアルタイム通知', value: inAppNotif, toggle: () => setInApp(v => !v) },
-                ].map(({ label, sub, value, toggle }, i) => (
-                  <div
-                    key={label}
-                    className="flex items-center justify-between py-2.5"
-                    style={{ borderBottom: i === 0 ? '1px solid #F0E8D8' : undefined }}
-                  >
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-brand-dark">{label}</div>
-                      <div className="text-[10.5px] text-brand-muted">{sub}</div>
+              <div className="rounded-2xl overflow-hidden" style={{ border: '1px solid #E4D4B8' }}>
+                {/* Master toggles */}
+                <div className="px-4 pt-4 pb-3" style={{ background: '#FFFDF7', borderBottom: '1px solid #F0E8D8' }}>
+                  <div className="font-extrabold text-brand-dark text-[13px] mb-3">通知設定</div>
+                  {([
+                    { key: 'email_notifications' as const,  label: 'メール通知',    sub: 'メールで通知を受信' },
+                    { key: 'in_app_notifications' as const, label: 'アプリ内通知',  sub: 'リアルタイムトースト' },
+                  ]).map(({ key, label, sub }, i) => (
+                    <div
+                      key={key}
+                      className="flex items-center justify-between py-2.5"
+                      style={{ borderBottom: i === 0 ? '1px solid #F0E8D8' : undefined }}
+                    >
+                      <div>
+                        <div className="text-[12.5px] font-semibold text-brand-dark">{label}</div>
+                        <div className="text-[10.5px] text-brand-muted">{sub}</div>
+                      </div>
+                      <Toggle on={prefs[key]} onToggle={() => setPrefs(p => ({ ...p, [key]: !p[key] }))} />
                     </div>
-                    <Toggle on={value} onToggle={toggle} />
+                  ))}
+                </div>
+
+                {/* Per-type matrix — メール・Chat columns */}
+                <div className="px-4 pt-3 pb-4" style={{ background: '#FAF5EC' }}>
+                  <div className="text-[10px] font-bold text-brand-muted uppercase tracking-wide mb-2.5">通知の種類ごとの設定</div>
+
+                  {/* Column headers */}
+                  <div className="grid grid-cols-[1fr_48px_48px] gap-x-2 mb-1 px-0.5">
+                    <div />
+                    <div className="text-center text-[9.5px] font-bold text-brand-muted uppercase tracking-wide">メール</div>
+                    <div className="text-center text-[9.5px] font-bold text-brand-muted uppercase tracking-wide">Chat</div>
                   </div>
-                ))}
+
+                  {([
+                    { label: '📋 新着投稿',   emailKey: 'notif_new_post_email' as const, chatKey: 'notif_new_post_chat' as const },
+                    { label: '💬 コメント',   emailKey: 'notif_comment_email'  as const, chatKey: 'notif_comment_chat'  as const },
+                    { label: '❤️ いいね',     emailKey: 'notif_like_email'     as const, chatKey: 'notif_like_chat'     as const },
+                  ]).map(({ label, emailKey, chatKey }, i) => (
+                    <div
+                      key={emailKey}
+                      className="grid grid-cols-[1fr_48px_48px] gap-x-2 items-center py-2"
+                      style={{ borderTop: i > 0 ? '1px solid #EDE4D0' : undefined }}
+                    >
+                      <div className="text-[12px] font-semibold text-brand-dark">{label}</div>
+                      {/* Email checkbox */}
+                      <div className="flex justify-center">
+                        <button
+                          onClick={() => setPrefs(p => ({ ...p, [emailKey]: !p[emailKey] }))}
+                          disabled={!prefs.email_notifications}
+                          className="w-5 h-5 rounded-md flex items-center justify-center transition-all disabled:opacity-30"
+                          style={{
+                            background: prefs[emailKey] && prefs.email_notifications ? '#E8732A' : '#F0E8D8',
+                            border: `1.5px solid ${prefs[emailKey] && prefs.email_notifications ? '#E8732A' : '#D8C9A8'}`,
+                          }}
+                        >
+                          {prefs[emailKey] && prefs.email_notifications && (
+                            <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                              <path d="M1 4l2.5 2.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                      {/* Chat checkbox */}
+                      <div className="flex justify-center">
+                        <button
+                          onClick={() => setPrefs(p => ({ ...p, [chatKey]: !p[chatKey] }))}
+                          className="w-5 h-5 rounded-md flex items-center justify-center transition-all"
+                          style={{
+                            background: prefs[chatKey] ? '#1E5FA8' : '#F0E8D8',
+                            border: `1.5px solid ${prefs[chatKey] ? '#1E5FA8' : '#D8C9A8'}`,
+                          }}
+                        >
+                          {prefs[chatKey] && (
+                            <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                              <path d="M1 4l2.5 2.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               {/* Save */}
               <motion.button
                 whileTap={{ scale: 0.97 }}
-                onClick={() => update.mutate({ full_name: name, email_notifications: emailNotif, in_app_notifications: inAppNotif })}
+                onClick={() => update.mutate({ full_name: name, ...prefs })}
                 disabled={update.isPending}
                 className="w-full py-3 rounded-2xl font-extrabold text-white text-[14px] disabled:opacity-50"
                 style={{ background: '#3A2A1A' }}
               >
                 {saved ? '✓ 保存しました！' : update.isPending ? '保存中…' : '変更を保存'}
+              </motion.button>
+
+              {/* Log out other devices — current session survives */}
+              <motion.button
+                whileTap={{ scale: 0.97 }}
+                onClick={() => logoutAll.mutate()}
+                disabled={logoutAll.isPending}
+                className="w-full py-3 rounded-2xl font-semibold text-[13px] disabled:opacity-50"
+                style={{ color: '#A8906E', border: '1px solid #E4D4B8', background: '#FFFDF7' }}
+              >
+                {logoutAll.isSuccess
+                  ? `✓ 他のセッションをログアウトしました`
+                  : logoutAll.isPending ? '処理中…' : '他のデバイスからログアウト'}
               </motion.button>
 
               {/* Sign out */}
@@ -544,9 +627,9 @@ export default function Profile() {
                   <div className="flex items-center gap-1.5">
                     <div
                       className="w-2 h-2 rounded-full"
-                      style={{ background: TYPE_COLOR[post.post_type] ?? '#A8906E' }}
+                      style={{ background: postTypeColor(post.post_type) }}
                     />
-                    <span className="text-[9.5px] font-bold uppercase tracking-wide" style={{ color: TYPE_COLOR[post.post_type] ?? '#A8906E' }}>
+                    <span className="text-[9.5px] font-bold uppercase tracking-wide" style={{ color: postTypeColor(post.post_type) }}>
                       {post.post_type}
                     </span>
                   </div>
