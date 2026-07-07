@@ -54,8 +54,11 @@ class SSEManager {
     }
   }
 
+  // A real `data:` event, not a raw `:comment` — comments keep the TCP socket
+  // alive but never reach EventSource.onmessage, so the client has no way to
+  // tell a truly-dead (but not yet errored) connection from an idle one.
   ping(): void {
-    const heartbeat = ': ping\n\n'
+    const heartbeat = `data: ${JSON.stringify({ type: 'PING' })}\n\n`
     for (const [, set] of this.#clients) {
       for (const res of set) {
         try { res.write(heartbeat) } catch { /* cleaned up on close */ }

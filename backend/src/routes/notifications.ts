@@ -15,7 +15,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     const { rows } = await query(
       `SELECT n.id, n.post_id, n.type, n.read_at, n.created_at,
               p.title AS post_title, p.post_type,
-              u.id AS actor_id, u.full_name AS actor_name
+              u.id AS actor_id, u.full_name AS actor_name, u.avatar_url AS actor_avatar
        FROM notifications n
        JOIN posts p ON p.id = n.post_id AND p.deleted_at IS NULL
        LEFT JOIN users u ON u.id = n.actor_id

@@ -23,6 +23,7 @@ const postSelectSQL = `
   SELECT
     p.id, p.title, p.content, p.post_type, p.visibility_scope,
     p.tags, p.created_at, p.updated_at, p.event_date, p.is_pinned,
+    p.cover_attachment_id,
     u.id         AS author_id,
     u.full_name  AS author_name,
     u.avatar_url AS author_avatar,
@@ -226,7 +227,11 @@ router.post('/', requireAuth, postCreateLimiter, async (req: Request, res: Respo
         [authorId, departmentId, post.id]
       )
 
-      sseManager.broadcastAll({ type: 'NEW_POST', postId: post.id })
+      // Scoped to actual recipients (+ author) — broadcastAll would tell users
+      // outside a DEPARTMENT-scoped post's audience that a "new post" is
+      // available, only for them to click the pill and see nothing (the
+      // visibility check server-side still hides it), a dead-end interaction.
+      sseManager.broadcast([...recipientRows.map(r => r.id), authorId], { type: 'NEW_POST', postId: post.id })
       // Push badge update to all recipients
       sseManager.broadcast(recipientRows.map(r => r.id), { type: 'NOTIFICATION' })
 
@@ -313,8 +318,14 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 // PUT /api/posts/:id
 router.put('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, content, tags } = req.body as { title?: string; content?: string; tags?: unknown }
+    const { title, content, tags, cover_attachment_id } = req.body as {
+      title?: string; content?: string; tags?: unknown; cover_attachment_id?: string
+    }
     const { id: userId, role, departmentId } = (req as RequestWithUser).user
+
+    if (cover_attachment_id !== undefined && !UUID_RE.test(cover_attachment_id)) {
+      return res.status(400).json({ error: 'Invalid cover_attachment_id' })
+    }
 
     if (title !== undefined && title.trim().length > MAX_TITLE_LEN) {
       return res.status(400).json({ error: `Title must be ${MAX_TITLE_LEN} characters or less` })
@@ -334,11 +345,15 @@ router.put('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
        SET title = COALESCE($3, title),
            content = COALESCE($4, content),
            tags = COALESCE($5::text[], tags),
+           -- only accept a cover that actually belongs to this post
+           cover_attachment_id = COALESCE(
+             (SELECT a.id FROM attachments a WHERE a.id = $7 AND a.post_id = posts.id),
+             cover_attachment_id),
            updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
          AND ($2 = 'admin' OR author_id = $6)
        RETURNING id`,
-      [req.params.id, role, title?.trim() ?? null, content?.trim() ?? null, safeTags ?? null, userId]
+      [req.params.id, role, title?.trim() ?? null, content?.trim() ?? null, safeTags ?? null, userId, cover_attachment_id ?? null]
     )
 
     if (!rows[0]) return res.status(404).json({ error: 'Post not found or not authorized' })

@@ -36,14 +36,16 @@ const ROLE_COLORS = {
 
 const DEPT_AVATAR = ['#7A5C30','#C05A18','#1E5FA8','#1A7A48','#6B35A8','#C07090']
 
-function Avatar({ name, idx = 0 }: { name: string; idx?: number }) {
-  const ini = initialsOf(name)
+function Avatar({ name, avatarUrl, idx = 0 }: { name: string; avatarUrl?: string | null; idx?: number }) {
+  if (avatarUrl) {
+    return <img src={avatarUrl} alt={name} className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
+  }
   return (
     <div
       className="w-9 h-9 rounded-full flex items-center justify-center text-white font-extrabold text-[11px] flex-shrink-0"
       style={{ background: DEPT_AVATAR[idx % DEPT_AVATAR.length] }}
     >
-      {ini}
+      {initialsOf(name)}
     </div>
   )
 }
@@ -497,7 +499,17 @@ export default function AdminPanel() {
   const [addDeptOpen, setAddDeptOpen] = useState(false)
   const [addUserOpen, setAddUserOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [usersPage, setUsersPage] = useState(0)
+  const USERS_PER_PAGE = 30
   const [activeTab, setActiveTab] = useState<'users' | 'departments' | 'logs' | 'webhooks'>('users')
+
+  // Debounce so search-as-you-type doesn't fire a query per keystroke,
+  // and reset to page 0 whenever the search term changes.
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedSearch(search); setUsersPage(0) }, 300)
+    return () => clearTimeout(t)
+  }, [search])
 
   const openProfile = (userId: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -505,9 +517,16 @@ export default function AdminPanel() {
     navigate(`/users/${userId}`, { state: { background: existingBg ?? location } })
   }
 
-  const { data: usersData, isLoading: usersLoading } = useQuery<{ users: AdminUser[] }>({
-    queryKey: ['admin-users'],
-    queryFn: () => api.get('/admin/users'),
+  const { data: usersData, isLoading: usersLoading } = useQuery<{ users: AdminUser[]; total: number }>({
+    // Search runs server-side (matches any user, not just the current page)
+    // and the page itself stays small — 30 rows per request instead of
+    // fetching everyone up front.
+    queryKey: ['admin-users', debouncedSearch, usersPage],
+    queryFn: () => {
+      const p = new URLSearchParams({ limit: String(USERS_PER_PAGE), offset: String(usersPage * USERS_PER_PAGE) })
+      if (debouncedSearch.trim()) p.set('search', debouncedSearch.trim())
+      return api.get(`/admin/users?${p}`)
+    },
     staleTime: 30_000,
   })
 
@@ -517,13 +536,9 @@ export default function AdminPanel() {
     staleTime: Infinity,
   })
 
-  const users = usersData?.users ?? []
+  const filtered = usersData?.users ?? []
+  const usersTotal = usersData?.total ?? 0
   const departments = deptsData?.departments ?? []
-
-  const filtered = users.filter(u =>
-    u.full_name.toLowerCase().includes(search.toLowerCase()) ||
-    u.email.toLowerCase().includes(search.toLowerCase())
-  )
 
   if (me?.role !== 'admin') {
     return (
@@ -547,7 +562,7 @@ export default function AdminPanel() {
         </div>
         <div className="flex gap-1 p-0.5 rounded-full" style={{ background: 'rgba(58,42,26,0.08)' }}>
           {([
-            { id: 'users',       label: `ユーザー (${users.length})` },
+            { id: 'users',       label: `ユーザー (${usersTotal})` },
             { id: 'departments', label: '部署' },
             { id: 'logs',        label: 'ログ' },
             { id: 'webhooks',    label: 'Chat通知' },
@@ -625,7 +640,7 @@ export default function AdminPanel() {
                       className="flex-shrink-0 rounded-full transition-opacity hover:opacity-70"
                       title="プロフィールを見る"
                     >
-                      <Avatar name={u.full_name} idx={i} />
+                      <Avatar name={u.full_name} avatarUrl={u.avatar_url} idx={i} />
                     </button>
 
                     {/* Name/email — click opens profile panel */}
@@ -663,6 +678,29 @@ export default function AdminPanel() {
                   </motion.div>
                 )
               })}
+            </div>
+          )}
+
+          {/* Pagination */}
+          {(usersPage > 0 || filtered.length === USERS_PER_PAGE) && (
+            <div className="flex items-center justify-center gap-3 mt-5">
+              <button
+                onClick={() => setUsersPage(p => Math.max(0, p - 1))}
+                disabled={usersPage === 0}
+                className="px-4 py-2 rounded-full text-[12px] font-bold disabled:opacity-30 transition-opacity"
+                style={{ background: '#F0E8D8', color: '#7A5C30' }}
+              >
+                ← 前へ
+              </button>
+              <span className="text-[12px] text-brand-muted font-semibold">ページ {usersPage + 1}</span>
+              <button
+                onClick={() => setUsersPage(p => p + 1)}
+                disabled={(usersPage + 1) * USERS_PER_PAGE >= usersTotal}
+                className="px-4 py-2 rounded-full text-[12px] font-bold disabled:opacity-30 transition-opacity"
+                style={{ background: '#F0E8D8', color: '#7A5C30' }}
+              >
+                次へ →
+              </button>
             </div>
           )}
         </div>
@@ -927,6 +965,9 @@ function AuditLogTab() {
   const [actionFilter, setActionFilter] = useState('')
   const [page, setPage] = useState(0)
   const PER_PAGE = 40
+
+  // Back to top when flipping pages — otherwise you land mid/bottom of the new page
+  useEffect(() => { window.scrollTo(0, 0) }, [page, actionFilter])
 
   const { data, isLoading, refetch, isFetching } = useQuery<{ logs: AuditEntry[] }>({
     queryKey: ['audit-log', actionFilter, page],

@@ -143,7 +143,9 @@ router.put('/me/avatar', requireAuth, async (req: Request, res: Response, next: 
     fs.mkdirSync(AVATAR_DIR, { recursive: true })
     fs.writeFileSync(path.join(AVATAR_DIR, `${userId}.webp`), processed)
 
-    const avatarUrl = `/uploads/avatars/${userId}.webp`
+    // ?v= cache-buster: the file path never changes, and /uploads is served
+    // with a 7-day max-age — without this, browsers keep the old picture.
+    const avatarUrl = `/uploads/avatars/${userId}.webp?v=${Date.now()}`
     await query(`UPDATE users SET avatar_url = $2, updated_at = now() WHERE id = $1`, [userId, avatarUrl])
     res.json({ avatar_url: avatarUrl })
   } catch (err) { next(err) }

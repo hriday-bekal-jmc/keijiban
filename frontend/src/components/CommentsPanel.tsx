@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
-import { X } from 'lucide-react'
+import { X, Trash2 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
-import { initials as initialsOf, useAddComment } from '../lib/postMeta'
+import { initials as initialsOf, useAddComment, useDeleteComment } from '../lib/postMeta'
 import { UserHoverCard } from './UserHoverCard'
 import type { Comment } from '../types'
 
@@ -62,6 +62,7 @@ export default function CommentsPanel({ postId, postTitle, onClose }: CommentsPa
   const comments: Comment[] = data?.comments ?? []
 
   const addComment = useAddComment(postId, { onClear: () => setDraft('') })
+  const deleteComment = useDeleteComment(postId)
 
   const submit = () => {
     if (!draft.trim() || addComment.isPending) return
@@ -156,6 +157,18 @@ export default function CommentsPanel({ postId, postTitle, onClose }: CommentsPa
                     {new Date(c.created_at).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                   </div>
                 </div>
+                {(user?.id === c.author_id || user?.role === 'admin') && (
+                  <button
+                    onClick={() => { if (confirm('このコメントを削除しますか？')) deleteComment.mutate(c.id) }}
+                    className="flex-shrink-0 p-1 rounded-full transition-colors"
+                    style={{ color: '#C4A87A' }}
+                    onMouseEnter={e => { e.currentTarget.style.color = '#C0392B' }}
+                    onMouseLeave={e => { e.currentTarget.style.color = '#C4A87A' }}
+                    title="削除"
+                  >
+                    <Trash2 size={13} strokeWidth={2} />
+                  </button>
+                )}
               </motion.div>
             ))}
           </div>

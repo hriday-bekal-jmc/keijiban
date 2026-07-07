@@ -132,12 +132,20 @@ export default function Notifications() {
               >
                 {/* Avatar with type icon badge */}
                 <div className="relative flex-shrink-0">
-                  <div
-                    className="w-11 h-11 rounded-full flex items-center justify-center text-white font-extrabold text-[13px]"
-                    style={{ background: color }}
-                  >
-                    {initials}
-                  </div>
+                  {(n as { actor_avatar?: string | null }).actor_avatar ? (
+                    <img
+                      src={(n as { actor_avatar?: string | null }).actor_avatar!}
+                      alt={n.actor_name ?? ''}
+                      className="w-11 h-11 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div
+                      className="w-11 h-11 rounded-full flex items-center justify-center text-white font-extrabold text-[13px]"
+                      style={{ background: color }}
+                    >
+                      {initials}
+                    </div>
+                  )}
                   <div
                     className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px]"
                     style={{ background: '#FFFDF7', border: '1.5px solid #E4D4B8' }}

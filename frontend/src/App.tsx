@@ -1,5 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuth } from './contexts/AuthContext'
 import { useSSE } from './hooks/useSSE'
@@ -8,17 +8,20 @@ import Feed from './pages/Feed'
 import Notifications from './pages/Notifications'
 import Profile from './pages/Profile'
 import Bookmarks from './pages/Bookmarks'
+import AdminPanel from './pages/AdminPanel'
 import Navigation from './components/Navigation'
 import AppHeader from './components/AppHeader'
 import UserProfilePanel from './components/UserProfilePanel'
-import DotGrid from './components/DotGrid'
 
 // Code-split the heavy screens: PostComposer pulls in all of tiptap (~half the
-// bundle), AdminPanel and PostDetail are rarely the first screen. Each loads
-// on demand; PostCard prefetches the PostDetail chunk on hover.
+// bundle); PostDetail is prefetched on card hover; DotGrid carries gsap and
+// loads after first paint. AdminPanel stays a static import on purpose — a
+// lazy chunk suspending inside the tab AnimatePresence swallows the outgoing
+// page's exit callback, leaving an invisible full-height ghost that keeps the
+// document scrollable long past the real content.
 const PostComposer = lazy(() => import('./components/PostComposer'))
-const AdminPanel   = lazy(() => import('./pages/AdminPanel'))
 const PostDetail   = lazy(() => import('./pages/PostDetail'))
+const DotGrid      = lazy(() => import('./components/DotGrid'))
 import { useQuery } from '@tanstack/react-query'
 import { api } from './lib/api'
 import type { Location } from 'react-router-dom'
@@ -40,13 +43,23 @@ const BLUR_STRIPS = [
 ]
 
 function AppShell() {
-  const [activeTab, setActiveTab]                   = useState<string>('feed')
   const [searchQuery, setSearchQuery]               = useState<string>('')
   const [composerOpen, setComposerOpen]             = useState<boolean>(false)
   const [bookmarksInitialTab, setBookmarksInitialTab] = useState<'saved' | 'events' | 'pinned'>('saved')
   const { user } = useAuth()
   const location = useLocation()
+  const navigate = useNavigate()
   useSSE()
+
+  // Tab is derived from the URL (?tab=), not local state. This is what makes
+  // browser back/forward and page refresh behave correctly between tabs, and
+  // what makes closing a post/user modal return to the exact tab it was
+  // opened from — the modal's `background` location carries the ?tab= with it.
+  const activeTab = new URLSearchParams(location.search).get('tab') ?? 'feed'
+  const setActiveTab = (tab: string) => {
+    if (tab === activeTab) return // avoid spamming history (e.g. onSearch fires per keystroke)
+    navigate(tab === 'feed' ? '/' : `/?tab=${tab}`)
+  }
 
   // Reset scroll position when switching tabs. Without this, switching from a
   // long feed (scrolled 2000px) to a short page (admin, profile) leaves the
@@ -94,6 +107,7 @@ function AppShell() {
         onSearch={q => { setSearchQuery(q); setActiveTab('search') }}
         onSearchClear={() => { setSearchQuery(''); setActiveTab('feed') }}
         onAdmin={() => setActiveTab('admin')}
+        onProfile={() => setActiveTab('profile')}
       />
       <main style={{ paddingBottom: 'calc(8rem + env(safe-area-inset-bottom, 0px))' }}>{children}</main>
       <Navigation
@@ -108,31 +122,35 @@ function AppShell() {
   )
 
   return (
-    <Suspense fallback={null}>
+    <>
       {/* Fixed dot-grid background.
           z-index: 1 — above the html/body background layer, below content (z:2).
           pointer-events: none; DotGrid.tsx listens on window so it still tracks
           the mouse even though the canvas is behind all content. */}
       <div style={{ position: 'fixed', inset: 0, zIndex: 1, pointerEvents: 'none' }}>
-        <DotGrid
-          dotSize={3}
-          gap={20}
-          baseColor="#e2cfa0"
-          activeColor="#c9a84c"
-          proximity={45}
-          speedTrigger={600}
-          shockRadius={65}
-          shockStrength={2}
-          maxSpeed={1500}
-          resistance={750}
-          returnDuration={1.5}
-        />
+        {/* Own Suspense boundary: the shell must not blank while this
+            decorative chunk (DotGrid + gsap) streams in after first paint */}
+        <Suspense fallback={null}>
+          <DotGrid
+            dotSize={3}
+            gap={20}
+            baseColor="#e2cfa0"
+            activeColor="#c9a84c"
+            proximity={45}
+            speedTrigger={600}
+            shockRadius={65}
+            shockStrength={2}
+            maxSpeed={1500}
+            resistance={750}
+            returnDuration={1.5}
+          />
+        </Suspense>
       </div>
 
       {/* Main shell — always rendered; when background exists the Routes below
           receives the background location so the feed stays visible */}
       <Routes location={background ?? location}>
-        <Route path="/posts/:id" element={shell(<PostDetail />)} />
+        <Route path="/posts/:id" element={shell(<Suspense fallback={null}><PostDetail /></Suspense>)} />
         {/* Standalone user profile — accessed via direct URL (no background state).
             In-app navigation uses the modal overlay in the {background} block below. */}
         <Route path="/users/:id" element={shell(<UserProfilePanel standalone />)} />
@@ -148,7 +166,11 @@ function AppShell() {
               {renderPage()}
             </motion.div>
           </AnimatePresence>,
-          composerOpen && user?.can_post && <PostComposer onClose={() => setComposerOpen(false)} />
+          composerOpen && user?.can_post && (
+            <Suspense fallback={null}>
+              <PostComposer onClose={() => setComposerOpen(false)} />
+            </Suspense>
+          )
         )} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -156,7 +178,7 @@ function AppShell() {
       {/* Modal overlays — only rendered when navigated from within the app */}
       {background && (
         <Routes>
-          <Route path="/posts/:id"  element={<PostDetail asModal />} />
+          <Route path="/posts/:id"  element={<Suspense fallback={null}><PostDetail asModal /></Suspense>} />
           <Route path="/users/:id"  element={<UserProfilePanel />} />
         </Routes>
       )}
@@ -181,7 +203,7 @@ function AppShell() {
           />
         ))}
       </div>
-    </Suspense>
+    </>
   )
 }
 

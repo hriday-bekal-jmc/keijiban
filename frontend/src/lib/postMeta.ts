@@ -97,3 +97,26 @@ export function useAddComment(
     },
   })
 }
+
+/** Optimistic delete-comment mutation — removes from ['comments', postId]
+ *  immediately, rolls back on error. */
+export function useDeleteComment(postId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, string, { prev?: { comments: any[] } }>({
+    mutationFn: (commentId: string) => api.delete(`/posts/${postId}/comments/${commentId}`),
+    onMutate: (commentId: string) => {
+      const prev = queryClient.getQueryData<{ comments: any[] }>(['comments', postId])
+      queryClient.setQueryData(['comments', postId], (old: { comments: any[] } | undefined) =>
+        old ? { comments: old.comments.filter(c => c.id !== commentId) } : old)
+      return { prev }
+    },
+    onError: (_err, _id, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(['comments', postId], ctx.prev)
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['comments', postId] })
+      queryClient.invalidateQueries({ queryKey: ['posts'] })
+    },
+  })
+}

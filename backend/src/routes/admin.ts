@@ -74,21 +74,35 @@ router.post('/users', requireAdmin, async (req: Request, res: Response, next: Ne
   } catch (err) { next(err) }
 })
 
-// GET /api/admin/users — paginated
+// GET /api/admin/users — paginated, optional ?search= over name/email (ILIKE,
+// indexed via pg_trgm — see migration 014). Search runs server-side so a
+// match outside the current page is still found instead of only filtering
+// whatever the client happens to have already loaded.
 router.get('/users', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { limit, offset } = parsePage(req.query, 50, 200)
 
-    const { rows } = await query(
-      `SELECT u.id, u.email, u.full_name, u.avatar_url, u.role, u.can_post,
-              u.department_id, d.name AS department_name, u.created_at,
-              u.chat_webhook_url
-       FROM users u JOIN departments d ON d.id = u.department_id
-       ORDER BY u.created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
-    )
-    res.json({ users: rows })
+    const { search } = req.query as Record<string, string | undefined>
+    const term = search?.trim() ? `%${search.trim()}%` : null
+    // Two independent param lists — same filter, different placeholder position
+    // in each query, so a single `where` string can't serve both.
+    const whereMain  = term ? 'WHERE u.full_name ILIKE $3 OR u.email ILIKE $3' : ''
+    const whereCount = term ? 'WHERE u.full_name ILIKE $1 OR u.email ILIKE $1' : ''
+
+    const [{ rows }, { rows: countRows }] = await Promise.all([
+      query(
+        `SELECT u.id, u.email, u.full_name, u.avatar_url, u.role, u.can_post,
+                u.department_id, d.name AS department_name, u.created_at,
+                u.chat_webhook_url
+         FROM users u JOIN departments d ON d.id = u.department_id
+         ${whereMain}
+         ORDER BY u.created_at DESC
+         LIMIT $1 OFFSET $2`,
+        term ? [limit, offset, term] : [limit, offset]
+      ),
+      query(`SELECT COUNT(*)::int AS count FROM users u ${whereCount}`, term ? [term] : []),
+    ])
+    res.json({ users: rows, total: (countRows[0] as { count: number }).count })
   } catch (err) { next(err) }
 })
 

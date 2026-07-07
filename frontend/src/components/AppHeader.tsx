@@ -8,9 +8,10 @@ interface AppHeaderProps {
   onSearch: (q: string) => void
   onSearchClear: () => void
   onAdmin?: () => void
+  onProfile?: () => void
 }
 
-export default function AppHeader({ user, searchQuery, onSearch, onSearchClear, onAdmin }: AppHeaderProps) {
+export default function AppHeader({ user, searchQuery, onSearch, onSearchClear, onAdmin, onProfile }: AppHeaderProps) {
   const initials = initialsOf(user?.full_name)
 
   return (
@@ -79,21 +80,27 @@ export default function AppHeader({ user, searchQuery, onSearch, onSearchClear, 
               {user.department_name}
             </div>
           )}
-          {user?.avatar_url ? (
-            <img
-              src={user.avatar_url}
-              alt={user.full_name}
-              className="w-8 h-8 rounded-full object-cover cursor-pointer flex-shrink-0"
-              style={{ boxShadow: '0 2px 8px rgba(232,115,42,0.28)' }}
-            />
-          ) : (
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center text-white font-extrabold text-[11px] cursor-pointer flex-shrink-0"
-              style={{ background: 'linear-gradient(135deg, #E87040, #F5A460)', boxShadow: '0 2px 8px rgba(232,115,42,0.28)' }}
-            >
-              {initials}
-            </div>
-          )}
+          <button
+            onClick={onProfile}
+            className="flex-shrink-0 rounded-full transition-transform active:scale-95"
+            title="プロフィール"
+          >
+            {user?.avatar_url ? (
+              <img
+                src={user.avatar_url}
+                alt={user.full_name}
+                className="w-8 h-8 rounded-full object-cover cursor-pointer"
+                style={{ boxShadow: '0 2px 8px rgba(232,115,42,0.28)' }}
+              />
+            ) : (
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white font-extrabold text-[11px] cursor-pointer"
+                style={{ background: 'linear-gradient(135deg, #E87040, #F5A460)', boxShadow: '0 2px 8px rgba(232,115,42,0.28)' }}
+              >
+                {initials}
+              </div>
+            )}
+          </button>
         </div>
       </div>
     </div>

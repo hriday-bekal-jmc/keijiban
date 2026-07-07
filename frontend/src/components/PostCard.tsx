@@ -226,7 +226,10 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
     addComment.mutate(commentDraft.trim())
   }
 
-  const imageAttachments: Attachment[] = post.attachments?.filter(a => a.thumbnail_path) ?? []
+  // Author-chosen cover leads the image grid; rest keep upload order
+  const imageAttachments: Attachment[] = (post.attachments?.filter(a => a.thumbnail_path) ?? [])
+    .sort((a, b) =>
+      a.id === post.cover_attachment_id ? -1 : b.id === post.cover_attachment_id ? 1 : 0)
   const hasImage = imageAttachments.length > 0
   const fileAttachments: Attachment[] = post.attachments?.filter(a => !a.thumbnail_path) ?? []
 
@@ -301,13 +304,28 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
 
   const deleteMutation = useMutation({
     mutationFn: () => api.delete(`/posts/${post.id}`),
-    onSuccess: () => {
+    // Remove from every list-shaped cache immediately — waiting for the
+    // network round trip + a subsequent refetch made deletes feel laggy.
+    onMutate: () => {
       setMenuOpen(false)
+      queryClient.setQueriesData({ queryKey: ['posts'] }, (old: any) => {
+        if (!old?.pages) return old
+        return { ...old, pages: old.pages.map((pg: any) => ({ ...pg, posts: pg.posts.filter((p: any) => p.id !== post.id) })) }
+      })
+      queryClient.setQueriesData({ queryKey: ['profile-posts'] }, (old: any) =>
+        old?.posts ? { ...old, posts: old.posts.filter((p: any) => p.id !== post.id) } : old)
+    },
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['posts'] })
       queryClient.invalidateQueries({ queryKey: ['profile-stats'] })
       queryClient.invalidateQueries({ queryKey: ['profile-posts'] })
     },
-    onError: () => toast.error('削除に失敗しました'),
+    onError: () => {
+      // Roll back by refetching — simplest correct recovery for a rare failure path
+      queryClient.invalidateQueries({ queryKey: ['posts'] })
+      queryClient.invalidateQueries({ queryKey: ['profile-posts'] })
+      toast.error('削除に失敗しました')
+    },
   })
 
   const isEdited = new Date(editedPost.updated_at).getTime() - new Date(editedPost.created_at).getTime() > 60_000

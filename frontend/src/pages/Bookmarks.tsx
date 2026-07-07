@@ -92,14 +92,26 @@ function SavedTab() {
     staleTime: 30_000,
   })
 
-  const remove = useMutation<void, Error, string>({
+  const remove = useMutation<void, Error, string, { prev?: { bookmarks: SavedPost[] } }>({
     mutationFn: (postId) => api.delete(`/bookmarks/${postId}`),
-    onSuccess: () => {
+    // Optimistic removal — otherwise the row sits there until a full refetch
+    // completes, which reads as lag for what should be an instant action.
+    onMutate: (postId) => {
+      const prev = queryClient.getQueryData<{ bookmarks: SavedPost[] }>(['bookmarks'])
+      queryClient.setQueryData(['bookmarks'], (old: { bookmarks: SavedPost[] } | undefined) =>
+        old ? { bookmarks: old.bookmarks.filter(b => b.id !== postId) } : old)
+      return { prev }
+    },
+    onError: (_err, _postId, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(['bookmarks'], ctx.prev)
+      toast.error('解除に失敗しました')
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['bookmarks'] })
       queryClient.invalidateQueries({ queryKey: ['posts'] })
       queryClient.invalidateQueries({ queryKey: ['profile-stats'] })
-      toast.success('保存を解除しました')
     },
+    onSuccess: () => toast.success('保存を解除しました'),
   })
 
   if (isLoading) return (
@@ -273,14 +285,23 @@ function PinnedTab() {
     staleTime: 60_000,
   })
 
-  const unpin = useMutation<void, Error, string>({
+  const unpin = useMutation<void, Error, string, { prev?: PinnedResponse }>({
     mutationFn: (id) => api.delete(`/admin/posts/${id}/pin`),
-    onSuccess: () => {
+    onMutate: (id) => {
+      const prev = queryClient.getQueryData<PinnedResponse>(['pinned-posts'])
+      queryClient.setQueryData(['pinned-posts'], (old: PinnedResponse | undefined) =>
+        old ? { posts: old.posts.filter(p => p.id !== id) } : old)
+      return { prev }
+    },
+    onError: (_err, _id, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(['pinned-posts'], ctx.prev)
+      toast.error('ピン留めの解除に失敗しました')
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['pinned-posts'] })
       queryClient.invalidateQueries({ queryKey: ['posts'] })
-      toast.success('ピン留めを解除しました')
     },
-    onError: () => toast.error('ピン留めの解除に失敗しました'),
+    onSuccess: () => toast.success('ピン留めを解除しました'),
   })
 
   if (isLoading) return (

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useLocation } from 'react-router-dom'
@@ -106,6 +107,10 @@ export function UserHoverCard({ userId, userName, children }: UserHoverCardProps
         {children}
       </div>
 
+      {/* Portal to <body>: ancestors with contain/transform (PostCard uses
+          contain:layout) would otherwise become the containing block for this
+          fixed-position card and shove it into the middle of the post. */}
+      {createPortal(
       <AnimatePresence>
         {visible && (
           <motion.div
@@ -172,7 +177,9 @@ export function UserHoverCard({ userId, userName, children }: UserHoverCardProps
             </button>
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body
+      )}
     </>
   )
 }

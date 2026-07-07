@@ -381,6 +381,10 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
   const [eventDate, setEventDate] = useState(editPost?.event_date ?? '')
   const [files, setFiles]         = useState<File[]>([])
   const [previews, setPreviews]   = useState<string[]>([])
+  // Author-chosen thumbnail: index into `files` for new uploads, or an
+  // existing attachment id when editing. Null = default (first image).
+  const [coverIdx, setCoverIdx]   = useState<number | null>(null)
+  const [coverId, setCoverId]     = useState<string | null>(editPost?.cover_attachment_id ?? null)
   const [inlineImages, setInlineImages] = useState<{ id: string; dataUrl: string; file: File }[]>([])
   const [isDragging, setIsDragging]   = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -535,6 +539,7 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
     if (previews[i]) URL.revokeObjectURL(previews[i])
     setFiles(p => p.filter((_, j) => j !== i))
     setPreviews(p => p.filter((_, j) => j !== i))
+    setCoverIdx(c => c === null ? null : c === i ? null : c > i ? c - 1 : c)
   }
 
   // ── Type selection (applies template if editor is empty / has current template) ──
@@ -627,18 +632,24 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
               if (tp) finalContent = finalContent.replace(new RegExp(`inline:${id}`, 'g'), tp)
             })
           } catch { toast.info('インライン画像のアップロードに失敗しました') }
+          // Strip any image whose upload didn't resolve — a dangling inline:
+          // marker would live in the post as a permanently broken image.
+          finalContent = finalContent.replace(/!\[[^\]]*\]\(inline:[^)]+\)/g, '')
         }
 
+        let coverForSave: string | undefined = coverId ?? undefined
         if (hasFiles) {
           try {
             const fd = new FormData()
             files.forEach(f => fd.append('files', f))
-            await api.post(`/uploads/${editPost.id}`, fd)
+            const up = await api.post(`/uploads/${editPost.id}`, fd) as { attachments: Array<{ id: string }> }
+            if (coverIdx !== null) coverForSave = up.attachments?.[coverIdx]?.id ?? coverForSave
           } catch { toast.info('添付ファイルのアップロードに失敗しました') }
         }
 
         const data = await api.put<{ post: Post }>(`/posts/${editPost.id}`, {
           title: title.trim(), content: finalContent, tags, event_date: eventDate || null,
+          ...(coverForSave ? { cover_attachment_id: coverForSave } : {}),
         })
 
         setIsUploading(false)
@@ -677,24 +688,32 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
       setIsUploading(true)
 
       if (hasInline) {
+        let updatedContent = submitContent
         try {
           const fd = new FormData()
           inlineImages.forEach(({ file }) => fd.append('files', file))
           const result = await api.post(`/uploads/${postId}`, fd) as { attachments: Array<{ thumbnail_path: string | null }> }
-          let updatedContent = submitContent
           inlineImages.forEach(({ id }, idx) => {
             const tp = result.attachments?.[idx]?.thumbnail_path
             if (tp) updatedContent = updatedContent.replace(new RegExp(`inline:${id}`, 'g'), tp)
           })
-          await api.put(`/posts/${postId}`, { content: updatedContent })
         } catch { toast.info('インライン画像のアップロードに失敗しました') }
+        // Strip unresolved inline: markers (failed uploads) so the saved post
+        // never carries a permanently broken image.
+        updatedContent = updatedContent.replace(/!\[[^\]]*\]\(inline:[^)]+\)/g, '')
+        if (updatedContent !== submitContent) {
+          await api.put(`/posts/${postId}`, { content: updatedContent }).catch(() => {})
+        }
       }
 
       if (hasFiles) {
         try {
           const fd = new FormData()
           files.forEach(f => fd.append('files', f))
-          await api.post(`/uploads/${postId}`, fd)
+          const up = await api.post(`/uploads/${postId}`, fd) as { attachments: Array<{ id: string }> }
+          // Author picked a thumbnail — record it now that attachment ids exist
+          const coverAttId = coverIdx !== null ? up.attachments?.[coverIdx]?.id : undefined
+          if (coverAttId) await api.put(`/posts/${postId}`, { cover_attachment_id: coverAttId }).catch(() => {})
         } catch { toast.info('添付ファイルのアップロードに失敗しました') }
       }
 
@@ -868,7 +887,14 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
             {files.map((f, i) => (
               <div key={i} className="relative group">
                 {previews[i] ? (
-                  <img src={previews[i]} alt={f.name} className="w-16 h-16 object-cover rounded-xl" style={{ border: '1.5px solid #E4D4B8' }} />
+                  <img
+                    src={previews[i]}
+                    alt={f.name}
+                    onClick={() => { setCoverIdx(c => c === i ? null : i); setCoverId(null) }}
+                    title="クリックでサムネイルに設定"
+                    className="w-16 h-16 object-cover rounded-xl cursor-pointer"
+                    style={{ border: coverIdx === i ? '2.5px solid #E8732A' : '1.5px solid #E4D4B8' }}
+                  />
                 ) : (
                   <div className="w-16 h-16 rounded-xl flex flex-col items-center justify-center gap-0.5 px-1" style={{ background: '#F0E8D8', border: '1.5px solid #E4D4B8' }}>
                     <Paperclip size={14} color="#A8906E" />
@@ -876,11 +902,38 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
                     <span className="text-[8px] text-brand-muted">{formatBytes(f.size)}</span>
                   </div>
                 )}
+                {coverIdx === i && (
+                  <span className="absolute bottom-0.5 left-0.5 text-[8px] font-extrabold px-1.5 py-0.5 rounded-full pointer-events-none"
+                    style={{ background: '#E8732A', color: '#FFFDF7' }}>★ サムネ</span>
+                )}
                 <button onClick={() => removeFile(i)}
                   className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold opacity-0 group-hover:opacity-100 transition-opacity"
                   style={{ background: '#3A2A1A', color: '#FFFDF7' }}>×</button>
               </div>
             ))}
+          </div>
+        )}
+        {/* Edit mode: pick the thumbnail from images already attached to the post */}
+        {isEdit && (editPost?.attachments?.some(a => a.thumbnail_path) ?? false) && (
+          <div className="mb-2">
+            <div className="text-[9.5px] font-bold text-brand-muted mb-1.5">サムネイルを選択（クリック）</div>
+            <div className="flex flex-wrap gap-2">
+              {editPost!.attachments!.filter(a => a.thumbnail_path).map(a => (
+                <div key={a.id} className="relative">
+                  <img
+                    src={a.thumbnail_path!}
+                    alt={a.file_name}
+                    onClick={() => { setCoverId(c => c === a.id ? null : a.id); setCoverIdx(null) }}
+                    className="w-16 h-16 object-cover rounded-xl cursor-pointer"
+                    style={{ border: coverId === a.id ? '2.5px solid #E8732A' : '1.5px solid #E4D4B8' }}
+                  />
+                  {coverId === a.id && (
+                    <span className="absolute bottom-0.5 left-0.5 text-[8px] font-extrabold px-1.5 py-0.5 rounded-full pointer-events-none"
+                      style={{ background: '#E8732A', color: '#FFFDF7' }}>★ サムネ</span>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
         <button

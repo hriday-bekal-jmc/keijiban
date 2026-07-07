@@ -56,12 +56,16 @@ export function renderMarkdown(raw: string): string {
   )
 
   // 2. Extract images BEFORE HTML-escaping so src URLs survive intact.
+  // Unresolved `inline:` markers (upload failed at post time) render nothing —
+  // a broken-image icon is worse than no image.
+  // Markers are padded with newlines: the serializer can glue an image to the
+  // following heading on one line, which would break block parsing.
   const imgSlots: string[] = []
   const src0 = raw1.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, src) => {
-    const safeSrc = /^(\/|data:|https?:)/.test(src) ? src : '#'
+    if (!/^(\/|data:|https?:)/.test(src)) return ''
     const idx = imgSlots.length
-    imgSlots.push(`<img class="md-img" src="${safeSrc}" alt="${alt.replace(/"/g, '&quot;')}" loading="lazy" />`)
-    return `\x00IMG${idx}\x00`
+    imgSlots.push(`<img class="md-img" src="${src.replace(/"/g, '%22')}" alt="${alt.replace(/"/g, '&quot;')}" loading="lazy" />`)
+    return `\n\x00IMG${idx}\x00\n`
   })
 
   const lines = src0.split('\n')

@@ -1,14 +1,16 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
+import { gsap } from 'gsap'
+import { InertiaPlugin } from 'gsap/InertiaPlugin'
 import './DotGrid.css'
+
+gsap.registerPlugin(InertiaPlugin)
 
 interface Dot {
   cx: number
   cy: number
   xOffset: number
   yOffset: number
-  vx: number
-  vy: number
-  _active: boolean
+  _inertiaApplied: boolean
 }
 
 interface Pointer {
@@ -75,12 +77,6 @@ export default function DotGrid({
   const baseRgb   = useMemo(() => hexToRgb(baseColor),   [baseColor])
   const activeRgb = useMemo(() => hexToRgb(activeColor), [activeColor])
 
-  // Underdamped spring — dots fly out on impulse, overshoot, and settle back
-  // (visually equivalent to the previous gsap inertia + elastic return).
-  // returnDuration scales the period; resistance scales the damping.
-  const omega = 2 * Math.PI / Math.max(returnDuration, 0.1)
-  const damping = 2 * 0.3 * omega * (resistance / 750)
-
   const circlePath = useMemo(() => {
     if (typeof window === 'undefined') return null
     const p = new Path2D()
@@ -94,7 +90,8 @@ export default function DotGrid({
     if (!wrap || !canvas) return
 
     const { width, height } = wrap.getBoundingClientRect()
-    const dpr = window.devicePixelRatio || 1
+    // Cap DPR at 2 — a 3x-density canvas for 3px background dots is wasted fill
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
 
     canvas.width  = width  * dpr
     canvas.height = height * dpr
@@ -112,50 +109,36 @@ export default function DotGrid({
     const dots: Dot[] = []
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        dots.push({ cx: startX + x * cell, cy: startY + y * cell, xOffset: 0, yOffset: 0, vx: 0, vy: 0, _active: false })
+        dots.push({ cx: startX + x * cell, cy: startY + y * cell, xOffset: 0, yOffset: 0, _inertiaApplied: false })
       }
     }
     dotsRef.current = dots
   }, [dotSize, gap])
 
-  // Draw loop — integrates the spring physics, then paints.
+  // Draw loop — reads xOffset/yOffset that GSAP tweens directly on dot objects.
   useEffect(() => {
     if (!circlePath) return
     let rafId: number
-    let lastT = 0
     const proxSq = proximity * proximity
 
-    const draw = (t: number) => {
+    const draw = () => {
       const canvas = canvasRef.current
       if (!canvas) return
       const ctx = canvas.getContext('2d')
       if (!ctx) return
-      const dt = Math.min(lastT ? (t - lastT) / 1000 : 0.016, 0.032)
-      lastT = t
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       const { x: px, y: py } = pointerRef.current
 
       for (const dot of dotsRef.current) {
-        if (dot._active) {
-          dot.vx += (-omega * omega * dot.xOffset - damping * dot.vx) * dt
-          dot.vy += (-omega * omega * dot.yOffset - damping * dot.vy) * dt
-          dot.xOffset += dot.vx * dt
-          dot.yOffset += dot.vy * dt
-          if (Math.abs(dot.xOffset) < 0.1 && Math.abs(dot.yOffset) < 0.1 &&
-              Math.abs(dot.vx) < 1 && Math.abs(dot.vy) < 1) {
-            dot.xOffset = 0; dot.yOffset = 0; dot.vx = 0; dot.vy = 0; dot._active = false
-          }
-        }
-
         const dx  = dot.cx - px
         const dy  = dot.cy - py
         const dsq = dx * dx + dy * dy
 
         let fill = baseColor
         if (dsq <= proxSq) {
-          const t2 = 1 - Math.sqrt(dsq) / proximity
-          fill = `rgb(${Math.round(baseRgb.r + (activeRgb.r - baseRgb.r) * t2)},${Math.round(baseRgb.g + (activeRgb.g - baseRgb.g) * t2)},${Math.round(baseRgb.b + (activeRgb.b - baseRgb.b) * t2)})`
+          const t = 1 - Math.sqrt(dsq) / proximity
+          fill = `rgb(${Math.round(baseRgb.r + (activeRgb.r - baseRgb.r) * t)},${Math.round(baseRgb.g + (activeRgb.g - baseRgb.g) * t)},${Math.round(baseRgb.b + (activeRgb.b - baseRgb.b) * t)})`
         }
 
         ctx.save()
@@ -168,9 +151,9 @@ export default function DotGrid({
       rafId = requestAnimationFrame(draw)
     }
 
-    rafId = requestAnimationFrame(draw)
+    draw()
     return () => cancelAnimationFrame(rafId)
-  }, [proximity, baseColor, activeRgb, baseRgb, circlePath, omega, damping])
+  }, [proximity, baseColor, activeRgb, baseRgb, circlePath])
 
   // Grid build + resize.
   useEffect(() => {
@@ -180,16 +163,9 @@ export default function DotGrid({
     return () => ro.disconnect()
   }, [buildGrid])
 
-  // Pointer tracking + impulse on fast move + click shockwave.
+  // Pointer tracking + GSAP inertia + click shockwave.
   // Listens on window so dots react even though canvas has pointer-events: none.
   useEffect(() => {
-    // Velocity that makes an underdamped spring peak roughly at `offset`.
-    const kick = (dot: Dot, offsetX: number, offsetY: number) => {
-      dot._active = true
-      dot.vx += offsetX * omega
-      dot.vy += offsetY * omega
-    }
-
     const onMove = (e: MouseEvent) => {
       const now = performance.now()
       const pr  = pointerRef.current
@@ -210,8 +186,16 @@ export default function DotGrid({
 
       if (speed <= speedTrigger) return
       for (const dot of dotsRef.current) {
-        if (Math.hypot(dot.cx - pr.x, dot.cy - pr.y) < proximity && !dot._active) {
-          kick(dot, dot.cx - pr.x + vx * 0.005, dot.cy - pr.y + vy * 0.005)
+        if (Math.hypot(dot.cx - pr.x, dot.cy - pr.y) < proximity && !dot._inertiaApplied) {
+          dot._inertiaApplied = true
+          gsap.killTweensOf(dot)
+          gsap.to(dot, {
+            inertia: { xOffset: dot.cx - pr.x + vx * 0.005, yOffset: dot.cy - pr.y + vy * 0.005, resistance },
+            onComplete: () => {
+              gsap.to(dot, { xOffset: 0, yOffset: 0, duration: returnDuration, ease: 'elastic.out(1,0.75)' })
+              dot._inertiaApplied = false
+            },
+          })
         }
       }
     }
@@ -224,9 +208,17 @@ export default function DotGrid({
       const cy   = e.clientY - rect.top
       for (const dot of dotsRef.current) {
         const dist = Math.hypot(dot.cx - cx, dot.cy - cy)
-        if (dist < shockRadius && !dot._active) {
+        if (dist < shockRadius && !dot._inertiaApplied) {
+          dot._inertiaApplied = true
+          gsap.killTweensOf(dot)
           const falloff = Math.max(0, 1 - dist / shockRadius)
-          kick(dot, (dot.cx - cx) * shockStrength * falloff, (dot.cy - cy) * shockStrength * falloff)
+          gsap.to(dot, {
+            inertia: { xOffset: (dot.cx - cx) * shockStrength * falloff, yOffset: (dot.cy - cy) * shockStrength * falloff, resistance },
+            onComplete: () => {
+              gsap.to(dot, { xOffset: 0, yOffset: 0, duration: returnDuration, ease: 'elastic.out(1,0.75)' })
+              dot._inertiaApplied = false
+            },
+          })
         }
       }
     }
@@ -238,7 +230,7 @@ export default function DotGrid({
       window.removeEventListener('mousemove', throttledMove)
       window.removeEventListener('click', onClick)
     }
-  }, [maxSpeed, speedTrigger, proximity, shockRadius, shockStrength, omega])
+  }, [maxSpeed, speedTrigger, proximity, resistance, returnDuration, shockRadius, shockStrength])
 
   return (
     <section className={`dot-grid ${className}`} style={style}>

@@ -40,6 +40,7 @@ export interface Post {
   is_bookmarked_by_me: boolean
   event_date: string | null
   is_pinned: boolean
+  cover_attachment_id?: string | null
   attachments?: Attachment[]
 }
 

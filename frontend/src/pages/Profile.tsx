@@ -233,20 +233,23 @@ export default function Profile() {
       fd.append('files', file)
       return api.put('/users/me/avatar', fd)
     },
-    onSuccess: () => {
-      refreshUser()
-      // Bust hover-card cache so others see the new photo immediately
-      if (user?.id) queryClient.invalidateQueries({ queryKey: ['user-preview', user.id] })
-    },
+    onSuccess: () => afterAvatarChange(),
   })
 
   const removeAvatar = useMutation<{ ok: boolean }, Error, void>({
     mutationFn: () => api.delete('/users/me/avatar'),
-    onSuccess: () => {
-      refreshUser()
-      if (user?.id) queryClient.invalidateQueries({ queryKey: ['user-preview', user.id] })
-    },
+    onSuccess: () => afterAvatarChange(),
   })
+
+  // Refresh every cache that carries author_avatar so the new photo shows
+  // everywhere at once (feed cards, comments, hover card, story ring).
+  const afterAvatarChange = () => {
+    refreshUser()
+    if (user?.id) queryClient.invalidateQueries({ queryKey: ['user-preview', user.id] })
+    queryClient.invalidateQueries({ queryKey: ['posts'] })
+    queryClient.invalidateQueries({ queryKey: ['comments'] })
+    queryClient.invalidateQueries({ queryKey: ['post'] })
+  }
 
   const logoutAll = useMutation<{ ok: boolean; sessionsRevoked: number }, Error, void>({
     mutationFn: () => api.post('/auth/logout-all'),

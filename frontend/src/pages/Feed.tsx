@@ -216,12 +216,13 @@ function StoriesBar({ posts, read, onRead }: StoriesBarProps) {
   const [cursor, setCursor] = useState<Record<string, number>>({})
 
   // Group posts by author, preserving first-seen order
-  const authorMap = new Map<string, { name: string; color: string; posts: Post[] }>()
+  const authorMap = new Map<string, { name: string; avatar: string | null; color: string; posts: Post[] }>()
   let colorIdx = 0
   for (const p of posts) {
     if (!authorMap.has(p.author_id)) {
       authorMap.set(p.author_id, {
         name: p.author_name,
+        avatar: (p as { author_avatar?: string | null }).author_avatar ?? null,
         color: STORY_COLORS[colorIdx++ % STORY_COLORS.length],
         posts: [],
       })
@@ -254,7 +255,7 @@ function StoriesBar({ posts, read, onRead }: StoriesBarProps) {
     >
       <div className="flex gap-4 items-flex-start w-max">
         <AnimatePresence initial={false}>
-          {visible.map(([authorId, { name, color, posts: ps }]) => {
+          {visible.map(([authorId, { name, avatar, color, posts: ps }]) => {
             const unreadCount = ps.filter(p => !read.has(p.id)).length
             const initials = initialsOf(name)
             return (
@@ -277,12 +278,20 @@ function StoriesBar({ posts, read, onRead }: StoriesBarProps) {
                       boxShadow: '0 0 0 2px #F4EDDA',
                     }}
                   >
-                    <div
-                      className="w-full h-full rounded-full flex items-center justify-center text-white font-extrabold text-[15px] border-2 border-[#FFFDF7]"
-                      style={{ background: color }}
-                    >
-                      {initials}
-                    </div>
+                    {avatar ? (
+                      <img
+                        src={avatar}
+                        alt={name}
+                        className="w-full h-full rounded-full object-cover border-2 border-[#FFFDF7]"
+                      />
+                    ) : (
+                      <div
+                        className="w-full h-full rounded-full flex items-center justify-center text-white font-extrabold text-[15px] border-2 border-[#FFFDF7]"
+                        style={{ background: color }}
+                      >
+                        {initials}
+                      </div>
+                    )}
                   </div>
 
                   {/* Count badge — only if multiple unread */}

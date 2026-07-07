@@ -2,12 +2,12 @@ import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ChevronLeft, Heart, MessageCircle, Bookmark, Send, X } from 'lucide-react'
+import { ChevronLeft, Heart, MessageCircle, Bookmark, Send, X, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { UserHoverCard } from '../components/UserHoverCard'
 import { renderMarkdown } from '../lib/markdown'
-import { postTypeMeta, initials, formatRelative, patchPostCaches, useAddComment } from '../lib/postMeta'
+import { postTypeMeta, initials, formatRelative, patchPostCaches, useAddComment, useDeleteComment } from '../lib/postMeta'
 import type { Post, Comment } from '../types'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -76,8 +76,8 @@ function PostSkeleton() {
   )
 }
 
-interface CommentItemProps { comment: Comment; idx: number }
-function CommentItem({ comment, idx }: CommentItemProps) {
+interface CommentItemProps { comment: Comment; idx: number; canDelete: boolean; onDelete: (id: string) => void }
+function CommentItem({ comment, idx, canDelete, onDelete }: CommentItemProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 4 }}
@@ -99,6 +99,16 @@ function CommentItem({ comment, idx }: CommentItemProps) {
           {formatRelative(comment.created_at)}
         </div>
       </div>
+      {canDelete && (
+        <button
+          onClick={() => { if (confirm('このコメントを削除しますか？')) onDelete(comment.id) }}
+          className="flex-shrink-0 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ color: '#C4A87A' }}
+          title="削除"
+        >
+          <Trash2 size={13} strokeWidth={2} />
+        </button>
+      )}
     </motion.div>
   )
 }
@@ -209,6 +219,8 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
   })
 
   const addComment = useAddComment(id, { onClear: () => setDraft('') })
+  const deleteComment = useDeleteComment(id)
+  const canDeleteComment = (c: Comment) => user?.id === c.author_id || user?.role === 'admin'
 
   const submit = () => {
     if (draft.trim() && !addComment.isPending) addComment.mutate(draft.trim())
@@ -261,7 +273,13 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
     </div>
   ) : (
     <div className="flex flex-col">
-      {comments.map((c, i) => <CommentItem key={c.id} comment={c} idx={i} />)}
+      {comments.map((c, i) => (
+        <CommentItem
+          key={c.id} comment={c} idx={i}
+          canDelete={canDeleteComment(c)}
+          onDelete={cid => deleteComment.mutate(cid)}
+        />
+      ))}
       <div ref={commentsEndRef} />
     </div>
   )
@@ -549,7 +567,13 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
               </div>
             ) : (
               <div className="px-5 pt-4">
-                {comments.map((c, i) => <CommentItem key={c.id} comment={c} idx={i} />)}
+                {comments.map((c, i) => (
+        <CommentItem
+          key={c.id} comment={c} idx={i}
+          canDelete={canDeleteComment(c)}
+          onDelete={cid => deleteComment.mutate(cid)}
+        />
+      ))}
                 <div ref={commentsEndRef} className="pb-4" />
               </div>
             )}
