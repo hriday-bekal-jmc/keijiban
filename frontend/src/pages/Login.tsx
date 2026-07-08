@@ -26,7 +26,13 @@ export default function Login() {
             login()
           } catch (err) {
             console.error('Login failed:', err)
-            setError(typeof err === 'string' ? err : 'ログインに失敗しました。もう一度お試しください。')
+            // Server-provided messages (rate limit, domain restriction) are
+            // meaningful — show them. Transport-level failures (HTTP 5xx,
+            // network) get a friendly retry message instead of "HTTP 500".
+            const msg = typeof err === 'string' && !/^(HTTP \d|Internal server error|Failed to fetch|NetworkError)/i.test(err)
+              ? err
+              : 'サーバーに接続できませんでした。数秒後にもう一度お試しください。'
+            setError(msg)
           } finally {
             setLoading(false)
           }

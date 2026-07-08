@@ -54,6 +54,18 @@ class SSEManager {
     }
   }
 
+  /** End every open stream — required for clean shutdown: SSE sockets are
+   *  long-lived, so without this the old process keeps the port bound and a
+   *  restarting watcher collides with it (EADDRINUSE → dead API window). */
+  closeAll(): void {
+    for (const [, set] of this.#clients) {
+      for (const res of set) {
+        try { res.end() } catch { /* already closed */ }
+      }
+    }
+    this.#clients.clear()
+  }
+
   // A real `data:` event, not a raw `:comment` — comments keep the TCP socket
   // alive but never reach EventSource.onmessage, so the client has no way to
   // tell a truly-dead (but not yet errored) connection from an idle one.

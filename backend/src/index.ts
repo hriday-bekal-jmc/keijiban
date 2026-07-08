@@ -17,6 +17,7 @@ const __dirname  = path.dirname(__filename)
 const uploadsRoot = path.resolve(__dirname, '../uploads')
 fs.mkdirSync(path.join(uploadsRoot, 'avatars'), { recursive: true })
 
+import type { Server } from 'http'
 import authRoutes from './routes/auth.js'
 import postRoutes from './routes/posts.js'
 import commentRoutes from './routes/comments.js'
@@ -29,14 +30,33 @@ import adminRoutes from './routes/admin.js'
 import uploadRoutes from './routes/uploads.js'
 import bookmarkRoutes from './routes/bookmarks.js'
 import { startNotificationWorker } from './services/notify.js'
+import { sseManager } from './services/sse.js'
 
-// Graceful shutdown — drain the connection pool before exiting so in-flight
-// queries can finish and the DB doesn't see hard disconnects.
+// Graceful shutdown — release the port FIRST (close SSE streams + keep-alive
+// sockets, stop accepting connections), then drain the DB pool. Closing only
+// the pool left the HTTP server bound to :3001, so a restarting watcher/PM2
+// worker collided with the old process (EADDRINUSE) and the API was dead for
+// a window — surfacing to users as intermittent 500s (e.g. on login).
+let server: Server | undefined
+
+function releasePort(): void {
+  sseManager.closeAll()
+  server?.closeAllConnections?.()
+}
+
 function gracefulShutdown(signal: string): void {
-  console.info(`[shutdown] ${signal} received — draining pool`)
-  pool.end()
-    .then(() => { console.info('[shutdown] pool drained'); process.exit(0) })
-    .catch(err => { console.error('[shutdown] pool.end error:', err); process.exit(1) })
+  console.info(`[shutdown] ${signal} received — closing server, draining pool`)
+  releasePort()
+  const closeServer = new Promise<void>(resolve => {
+    if (!server) return resolve()
+    server.close(() => resolve())
+    // Hard cap — never hang shutdown on a socket that won't die
+    setTimeout(resolve, 3_000).unref()
+  })
+  closeServer
+    .then(() => pool.end())
+    .then(() => { console.info('[shutdown] clean exit'); process.exit(0) })
+    .catch(err => { console.error('[shutdown] error:', err); process.exit(1) })
 }
 process.once('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.once('SIGINT',  () => gracefulShutdown('SIGINT'))
@@ -45,10 +65,14 @@ process.once('SIGINT',  () => gracefulShutdown('SIGINT'))
 // Continuing after these events risks undefined application state.
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection] shutting down:', reason)
+  releasePort()
+  server?.close()
   pool.end().finally(() => process.exit(1))
 })
 process.on('uncaughtException', (err) => {
   console.error('[uncaughtException] shutting down:', err)
+  releasePort()
+  server?.close()
   pool.end().finally(() => process.exit(1))
 })
 
@@ -108,7 +132,7 @@ app.use('/api/bookmarks',     bookmarkRoutes)
 
 app.use(errorHandler)
 
-app.listen(env.port, () => {
+server = app.listen(env.port, () => {
   console.log(`API running on :${env.port} [${env.isDev ? 'dev' : 'prod'}]`)
   startNotificationWorker()
 })
