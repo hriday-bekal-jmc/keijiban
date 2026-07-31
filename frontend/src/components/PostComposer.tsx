@@ -25,7 +25,9 @@ import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
 import { CALLOUT_STYLES } from '../lib/callouts'
 import { initials as initialsOf } from '../lib/postMeta'
-import type { Department, Post } from '../types'
+import { useActiveList } from '../lib/managedLists'
+import PostThumbnail from './PostThumbnail'
+import type { Department, Post, ThumbnailPreset, Category, Branch } from '../types'
 
 // ── FontSize mark extension (extends TextStyle) ─────────────────────────────────
 const FontSize = Extension.create({
@@ -385,6 +387,14 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
   // existing attachment id when editing. Null = default (first image).
   const [coverIdx, setCoverIdx]   = useState<number | null>(null)
   const [coverId, setCoverId]     = useState<string | null>(editPost?.cover_attachment_id ?? null)
+  // Categories (0..N) and branch. Branch null = 全社.
+  const [categoryIds, setCategoryIds] = useState<string[]>(
+    () => (editPost?.categories ?? []).map(c => c.id)
+  )
+  const [branchId, setBranchId] = useState<string | null>(editPost?.branch_id ?? null)
+  // Designed thumbnail (shown when the post has no images)
+  const [thumbPresetId, setThumbPresetId] = useState<string | null>(editPost?.thumbnail_preset_id ?? null)
+  const [thumbEmoji, setThumbEmoji]       = useState<string>(editPost?.thumbnail_emoji ?? '')
   const [inlineImages, setInlineImages] = useState<{ id: string; dataUrl: string; file: File }[]>([])
   const [isDragging, setIsDragging]   = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -515,12 +525,20 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
 
   // ── Data ────────────────────────────────────────────────────────────────────
 
-  const { data: deptsData } = useQuery<{ departments: Department[] }>({
-    queryKey: ['departments'],
-    queryFn: () => api.get('/admin/departments'),
-    staleTime: Infinity,
+  // All three read through the shared cache key, so anything an admin adds in
+  // マスタ管理 shows up here immediately — no reload.
+  const departments = useActiveList<Department & { sort_order: number; is_active: boolean }>('departments')
+
+  // Preset library rarely changes and is tiny — cache it for the session
+  const { data: presetsData } = useQuery<{ presets: ThumbnailPreset[] }>({
+    queryKey: ['thumbnail-presets'],
+    queryFn: () => api.get('/thumbnails'),
   })
-  const departments = deptsData?.departments ?? []
+  const categories = useActiveList<Category>('categories')
+  const branches = useActiveList<Branch>('branches')
+
+  const presets = (presetsData?.presets ?? []).filter(p => p.is_active)
+  const selectedPreset = presets.find(p => p.id === thumbPresetId) ?? null
 
   // ── File helpers ────────────────────────────────────────────────────────────
 
@@ -650,6 +668,11 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
         const data = await api.put<{ post: Post }>(`/posts/${editPost.id}`, {
           title: title.trim(), content: finalContent, tags, event_date: eventDate || null,
           ...(coverForSave ? { cover_attachment_id: coverForSave } : {}),
+          // Always sent so clearing the design persists (null is meaningful)
+          thumbnail_preset_id: thumbPresetId,
+          thumbnail_emoji: thumbEmoji.trim() || null,
+          category_ids: categoryIds,
+          branch_id: branchId,
         })
 
         setIsUploading(false)
@@ -670,7 +693,7 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
       } catch (err) {
         console.error('[PostComposer edit save]', err)
         setIsUploading(false)
-        toast.error(typeof err === 'string' ? err : '保存に失敗しました')
+        toast.error(err instanceof Error ? err.message : '保存に失敗しました')
       }
       return
     }
@@ -682,6 +705,10 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
         visibility_scope: visibility, tags,
         department_ids: visibility === 'DEPARTMENT' ? deptIds : [],
         _hasFiles: hasFiles || hasInline, event_date: eventDate || null,
+        thumbnail_preset_id: thumbPresetId,
+        thumbnail_emoji: thumbEmoji.trim() || null,
+        category_ids: categoryIds,
+        branch_id: branchId,
       })
 
       const postId = data.post.id
@@ -764,9 +791,11 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
 
   const settingsContent = (
     <div className="flex flex-col gap-5">
-      {/* Type cards */}
+      {/* Templates. These used to be the post taxonomy; categories replaced
+          that, so they now only prefill the body with a starting outline. */}
       <div>
-        <div className="text-[10.5px] font-bold text-brand-muted uppercase tracking-widest mb-2.5">投稿タイプ</div>
+        <div className="text-[10.5px] font-bold text-brand-muted uppercase tracking-widest mb-1">テンプレート</div>
+        <div className="text-[10px] text-brand-muted mb-2.5">本文の下書きを入れるだけです。分類はカテゴリで行います。</div>
         <div className="flex flex-col gap-1.5">
           {TYPE_OPTIONS.map(opt => (
             <button
@@ -857,6 +886,109 @@ export default function PostComposer({ onClose, editPost, onSaved }: PostCompose
       </div>
 
       {/* Event date */}
+      {/* Categories — a post can carry several */}
+      <div>
+        <div className="text-[10.5px] font-bold text-brand-muted uppercase tracking-widest mb-2.5">
+          カテゴリ（複数選択可）
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {categories.map(c => {
+            const on = categoryIds.includes(c.id)
+            return (
+              <button
+                key={c.id}
+                onClick={() => setCategoryIds(ids =>
+                  on ? ids.filter(i => i !== c.id) : [...ids, c.id])}
+                className="px-3 py-1.5 rounded-full text-[11.5px] font-bold transition-colors"
+                style={on
+                  ? { background: c.color, color: '#FFFDF7', border: `1.5px solid ${c.color}` }
+                  : { background: '#FFFDF7', color: '#6B5236', border: '1.5px solid #E4D4B8' }}
+              >
+                {c.name}
+              </button>
+            )
+          })}
+          {categories.length === 0 && (
+            <span className="text-[11px] text-brand-muted">カテゴリがありません（管理パネルで追加できます）</span>
+          )}
+        </div>
+      </div>
+
+      {/* Branch — 全社 means every branch sees it */}
+      <div>
+        <div className="text-[10.5px] font-bold text-brand-muted uppercase tracking-widest mb-2.5">対象拠点</div>
+        <div className="relative">
+          <select
+            value={branchId ?? ''}
+            onChange={e => setBranchId(e.target.value || null)}
+            className="w-full appearance-none px-3 py-2 rounded-xl text-[12px] text-brand-dark outline-none pr-9"
+            style={{ background: '#FAF5EC', border: `1.5px solid ${branchId ? '#E8732A' : '#E4D4B8'}` }}
+          >
+            <option value="">全社（すべての拠点）</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" color="#A8906E" />
+        </div>
+      </div>
+
+      {/* Thumbnail designer — only relevant when the post has no images,
+          since uploaded images lead the card in that case */}
+      <div>
+        <div className="flex items-center justify-between mb-2.5">
+          <div className="text-[10.5px] font-bold text-brand-muted uppercase tracking-widest flex items-center gap-1.5">
+            <ImagePlus size={11} strokeWidth={2.5} />サムネイル
+          </div>
+          {thumbPresetId && (
+            <button onClick={() => { setThumbPresetId(null); setThumbEmoji('') }}
+              className="text-[10px] font-bold" style={{ color: '#E8732A' }}>クリア</button>
+          )}
+        </div>
+
+        {/* Live preview — exactly what the feed card will render */}
+        <div className="rounded-xl overflow-hidden mb-2" style={{ border: '1.5px solid #E4D4B8' }}>
+          <PostThumbnail
+            title={title}
+            tags={tags}
+            postType={type}
+            emoji={thumbEmoji}
+            background={selectedPreset?.background}
+            textColor={selectedPreset?.text_color}
+            pattern={selectedPreset?.pattern}
+            height={116}
+            compact
+          />
+        </div>
+
+        {/* Design swatches */}
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {presets.map(p => (
+            <button
+              key={p.id}
+              onClick={() => setThumbPresetId(id => id === p.id ? null : p.id)}
+              title={p.name}
+              className="rounded-lg transition-transform active:scale-90"
+              style={{
+                width: 38, height: 26,
+                background: p.background,
+                border: thumbPresetId === p.id ? '2.5px solid #E8732A' : '1.5px solid #E4D4B8',
+              }}
+            />
+          ))}
+          {presets.length === 0 && (
+            <span className="text-[11px] text-brand-muted">デザインがありません（管理パネルで追加できます）</span>
+          )}
+        </div>
+
+        {/* Optional emoji */}
+        <input
+          value={thumbEmoji}
+          onChange={e => setThumbEmoji(e.target.value.slice(0, 16))}
+          placeholder="絵文字（任意） 例: 🎉"
+          className="w-full px-3 py-2 rounded-xl text-[12px] text-brand-dark outline-none transition-all"
+          style={{ background: '#FAF5EC', border: `1.5px solid ${thumbEmoji ? '#E8732A' : '#E4D4B8'}` }}
+        />
+      </div>
+
       <div>
         <div className="flex items-center justify-between mb-2.5">
           <div className="text-[10.5px] font-bold text-brand-muted uppercase tracking-widest flex items-center gap-1.5">

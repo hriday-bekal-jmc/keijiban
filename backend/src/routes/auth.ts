@@ -26,6 +26,19 @@ const loginLimiter = rateLimit({
 const router = Router()
 const googleClient = new OAuth2Client(env.googleClientId)
 
+// Transport failures reaching Google's cert endpoint — our fault, retryable.
+const NETWORK_ERROR_CODES = new Set([
+  'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'EHOSTUNREACH', 'ECONNABORTED',
+])
+
+// Warm Google's federated signon certs at boot so the first real login does
+// not pay the fetch. verifyIdToken caches them in-process, so every restart
+// starts cold; this hits the actual cert endpoint (an earlier version called
+// verifyIdToken with a dummy string, which threw before any network call and
+// therefore warmed nothing).
+googleClient.getFederatedSignonCertsAsync()
+  .catch(err => console.warn('[auth:cert-warmup-failed]', (err as Error).message))
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 interface DbUser {
@@ -37,6 +50,7 @@ interface DbUser {
   full_name?: string
   avatar_url?: string
   department_name?: string
+  branch_id?: string | null
 }
 
 /** Issue both cookies and store the refresh token hash in DB. */
@@ -46,6 +60,7 @@ async function issueSession(res: Response, user: DbUser, ip: string): Promise<vo
     email: user.email,
     role: user.role,
     departmentId: user.department_id,
+    branchId: user.branch_id ?? null,
     canPost: user.can_post,
   }
   const accessToken = createAccessToken(accessPayload)
@@ -69,12 +84,27 @@ router.post('/google', loginLimiter, async (req: Request, res: Response, next: N
     const { idToken } = req.body as { idToken?: string }
     if (!idToken) return res.status(400).json({ error: 'Missing idToken' })
 
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: env.googleClientId,
-    })
+    // Classify verification failures instead of letting them reach the 500
+    // handler: a malformed/expired/wrong-audience token is the client's
+    // problem (401), while being unable to reach Google's cert endpoint is
+    // ours (503, retryable). Previously both surfaced as "HTTP 500", which
+    // made ordinary token expiry look like a server outage.
+    let ticket
+    try {
+      ticket = await googleClient.verifyIdToken({ idToken, audience: env.googleClientId })
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? ''
+      if (NETWORK_ERROR_CODES.has(code)) {
+        console.error('[auth:google-unreachable]', { code, ip: req.ip })
+        return res.status(503).json({ error: 'サインインを検証できませんでした。もう一度お試しください。' })
+      }
+      // Log the detail server-side only — never echo token internals back.
+      console.warn('[auth:token-invalid]', { ip: req.ip, message: (err as Error).message })
+      return res.status(401).json({ error: 'サインインの検証に失敗しました。もう一度お試しください。' })
+    }
+
     const payload = ticket.getPayload()
-    if (!payload) return res.status(400).json({ error: 'Invalid token payload' })
+    if (!payload) return res.status(401).json({ error: 'Invalid token payload' })
 
     // Check both email domain AND Google's hosted-domain claim (hd).
     // Email alone can be spoofed with consumer Google accounts if client_id is leaked;
@@ -201,7 +231,7 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
     // Re-read user from DB — this is what ensures permission changes (canPost, role)
     // take effect within one refresh cycle (≤15 min after the access token was issued).
     const { rows: userRows } = await query(
-      `SELECT u.id, u.email, u.role, u.department_id, u.can_post,
+      `SELECT u.id, u.email, u.role, u.department_id, u.branch_id, u.can_post,
               u.full_name, u.avatar_url, d.name AS department_name
        FROM users u
        JOIN departments d ON d.id = u.department_id
@@ -223,7 +253,11 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
 
 // ── POST /api/auth/logout ─────────────────────────────────────────────────────
 
-router.post('/logout', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+// No requireAuth: it 401s once the 15-minute access token has expired, which
+// left the refresh token in the DB — so "log out" did not end the session and
+// the user was still signed in when they came back. Deleting by the presented
+// token hash needs no authentication, and clearing cookies is harmless.
+router.post('/logout', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const incoming = (req as Request & { cookies?: Record<string, string> }).cookies?.refresh_token
     if (incoming) {
@@ -231,7 +265,7 @@ router.post('/logout', requireAuth, async (req: Request, res: Response, next: Ne
       await query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hash])
     }
     clearAuthCookies(res)
-    console.info('[auth:logout]', { userId: (req as RequestWithUser).user.id, ip: req.ip })
+    console.info('[auth:logout]', { ip: req.ip })
     res.json({ ok: true })
   } catch (err) {
     next(err)
@@ -270,10 +304,12 @@ router.get('/me', requireAuth, async (req: Request, res: Response, next: NextFun
               u.notif_comment_email,  u.notif_comment_chat,
               u.notif_like_email,     u.notif_like_chat,
               u.department_id, d.name AS department_name,
+              u.branch_id, br.name AS branch_name,
               CASE WHEN ${VIBE_TODAY_SQL} THEN u.vibe_emoji ELSE NULL END AS vibe_emoji,
               CASE WHEN ${VIBE_TODAY_SQL} THEN u.vibe_label ELSE NULL END AS vibe_label
        FROM users u
        JOIN departments d ON d.id = u.department_id
+       LEFT JOIN branches br ON br.id = u.branch_id
        WHERE u.id = $1`,
       [(req as RequestWithUser).user.id]
     )

@@ -19,6 +19,7 @@ fs.mkdirSync(path.join(uploadsRoot, 'avatars'), { recursive: true })
 
 import type { Server } from 'http'
 import authRoutes from './routes/auth.js'
+import { testLoginRouter, testLoginEnabled } from './routes/testLogin.js' // ⚠️ TEST-ONLY — see TEST_LOGIN.md
 import postRoutes from './routes/posts.js'
 import commentRoutes from './routes/comments.js'
 import likeRoutes from './routes/likes.js'
@@ -29,7 +30,10 @@ import healthRoutes from './routes/health.js'
 import adminRoutes from './routes/admin.js'
 import uploadRoutes from './routes/uploads.js'
 import bookmarkRoutes from './routes/bookmarks.js'
-import { startNotificationWorker } from './services/notify.js'
+import thumbnailRoutes from './routes/thumbnails.js'
+import { managedListRouter } from './lib/managedList.js'
+import { startNotificationWorker, stopNotificationWorker } from './services/notify.js'
+import { startDriveSweep } from './services/driveSweep.js'
 import { sseManager } from './services/sse.js'
 
 // Graceful shutdown — release the port FIRST (close SSE streams + keep-alive
@@ -40,6 +44,9 @@ import { sseManager } from './services/sse.js'
 let server: Server | undefined
 
 function releasePort(): void {
+  // Stop the notify loop before draining the pool, otherwise a pass can send
+  // an email and then fail to record emailed_at — resending it after restart.
+  stopNotificationWorker()
   sseManager.closeAll()
   server?.closeAllConnections?.()
 }
@@ -78,6 +85,12 @@ process.on('uncaughtException', (err) => {
 
 const app: Express = express()
 
+// Behind a reverse proxy every request arrives from the proxy, so without this
+// req.ip is always 127.0.0.1 and EVERY user shares one rate-limit bucket —
+// the 11th person to sign in on a Monday morning would be locked out for 15
+// minutes. One hop (nginx/Caddy); raise if you add another layer.
+app.set('trust proxy', 1)
+
 const ALLOWED_ORIGIN = env.isDev ? 'http://localhost:5173' : `https://${env.cookieDomain}`
 
 app.use(helmet({
@@ -104,9 +117,13 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
   next()
 })
 
-// gzip API responses; skip SSE (compression buffers the event stream)
+// gzip API responses; skip SSE (compression buffers the event stream).
+// Must test originalUrl, not path: the filter runs on the first res.write(),
+// by which point Express has stripped the router's mount path and req.path is
+// '/stream'. With req.path the test never matched, so the event stream was
+// gzipped and every event sat in the compressor instead of reaching the client.
 app.use(compression({
-  filter: (req, res) => req.path.startsWith('/api/stream') ? false : compression.filter(req, res),
+  filter: (req, res) => req.originalUrl.startsWith('/api/stream') ? false : compression.filter(req, res),
 }))
 
 app.use(express.json({ limit: '1mb' }))
@@ -120,6 +137,14 @@ app.use(globalLimiter)
 
 app.use('/api/health',        healthRoutes)
 app.use('/api/auth',          authRoutes)
+
+// ⚠️ TEST-ONLY LOGIN — remove these three lines and see TEST_LOGIN.md
+if (testLoginEnabled()) {
+  console.warn('\n⚠️  TEST LOGIN IS ENABLED — anyone can sign in as any user by email.\n' +
+               '   Never run with ALLOW_TEST_LOGIN=true in production. See TEST_LOGIN.md.\n')
+  app.use('/api/test-login', testLoginRouter())
+}
+
 app.use('/api/stream',        streamRoutes)
 app.use('/api/posts',         postRoutes)
 app.use('/api/posts/:postId/comments', commentRoutes)
@@ -129,21 +154,39 @@ app.use('/api/users',         userRoutes)
 app.use('/api/admin',         adminRoutes)
 app.use('/api/uploads',       uploadRoutes)
 app.use('/api/bookmarks',     bookmarkRoutes)
+app.use('/api/thumbnails',    thumbnailRoutes)
+// Admin-curated lists. Adding a future one (roles, locations, tags…) is a
+// single line here plus an entry in the frontend's MANAGED_LISTS.
+app.use('/api/departments',   managedListRouter({ table: 'departments', audit: 'DEPARTMENT', maxNameLen: 100, hasColor: false }))
+app.use('/api/branches',      managedListRouter({ table: 'branches',    audit: 'BRANCH',     maxNameLen: 80,  hasColor: false }))
+app.use('/api/categories',    managedListRouter({ table: 'categories',  audit: 'CATEGORY',   maxNameLen: 60,  hasColor: true }))
 
 app.use(errorHandler)
 
 server = app.listen(env.port, () => {
   console.log(`API running on :${env.port} [${env.isDev ? 'dev' : 'prod'}]`)
   startNotificationWorker()
+  startDriveSweep()
 })
 
-// Purge expired + day-old rotated refresh tokens every 6 hours.
-// Rotated rows are kept 1 day for token-reuse (theft) detection.
+// Retention sweep every 6 hours. Without it audit_log, notifications and
+// post_views grow forever — audit_log alone takes a row per like/bookmark
+// toggle, which is millions per year at office scale.
 const SIX_HOURS = 6 * 60 * 60 * 1000
-setInterval(() => {
-  query(`DELETE FROM refresh_tokens
-         WHERE expires_at < now()
-            OR (rotated_at IS NOT NULL AND rotated_at < now() - interval '1 day')`)
-    .then(({ rowCount }) => { if (rowCount) console.info(`[token-cleanup] removed ${rowCount} stale refresh tokens`) })
-    .catch(err => console.error('[token-cleanup] error:', err))
-}, SIX_HOURS).unref()
+const RETENTION_SQL: Array<[string, string]> = [
+  ['refresh tokens', `DELETE FROM refresh_tokens
+     WHERE expires_at < now()
+        OR (rotated_at IS NOT NULL AND rotated_at < now() - interval '1 day')`],
+  ['audit rows',     `DELETE FROM audit_log WHERE created_at < now() - interval '12 months'`],
+  ['read notifications', `DELETE FROM notifications
+     WHERE read_at IS NOT NULL AND created_at < now() - interval '90 days'`],
+]
+
+function runRetention(): void {
+  for (const [label, sql] of RETENTION_SQL) {
+    query(sql)
+      .then(({ rowCount }) => { if (rowCount) console.info(`[retention] removed ${rowCount} ${label}`) })
+      .catch(err => console.error(`[retention] ${label} failed:`, err))
+  }
+}
+setInterval(runRetention, SIX_HOURS).unref()

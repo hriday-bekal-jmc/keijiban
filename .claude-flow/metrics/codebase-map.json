@@ -1,11 +1,11 @@
 {
-  "timestamp": "2026-07-07T08:16:42.143Z",
-  "projectRoot": "C:\\Users\\h-bekal\\Videos\\keijiban",
+  "timestamp": "2026-07-28T08:18:30.371Z",
+  "projectRoot": "c:\\Users\\h-bekal\\Videos\\keijiban",
   "structure": {
     "hasPackageJson": true,
     "hasTsConfig": false,
     "hasClaudeConfig": true,
     "hasClaudeFlow": true
   },
-  "scannedAt": 1783412202144
+  "scannedAt": 1785226710371
 }

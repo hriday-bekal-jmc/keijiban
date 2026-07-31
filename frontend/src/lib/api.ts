@@ -1,6 +1,21 @@
-// Thin fetch wrapper. Rejects with the server's error string (callers rely on
-// `typeof err === 'string'`). Serializes concurrent 401s behind one silent
-// refresh, then retries the original request once.
+// Thin fetch wrapper. Rejects with an ApiError carrying the server's message
+// and HTTP status, so callers can tell a real rejection (401/403) from a
+// transient outage (5xx / network) and retry only the latter. Serializes
+// concurrent 401s behind one silent refresh, then retries the request once.
+
+/** status 0 means the request never reached the server (network/DNS/abort). */
+export class ApiError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+  /** Worth retrying: the server was unreachable or failed, not the request. */
+  get isTransient(): boolean {
+    return this.status === 0 || this.status >= 500
+  }
+}
 
 let refreshing: Promise<void> | null = null
 
@@ -20,7 +35,7 @@ async function request<T>(method: string, url: string, data?: unknown, retried =
       body: data === undefined ? undefined : isForm ? data : JSON.stringify(data),
     })
   } catch (e) {
-    throw e instanceof Error ? e.message : String(e)
+    throw new ApiError(e instanceof Error ? e.message : String(e), 0)
   }
 
   if (res.ok) return res.status === 204 ? (undefined as T) : res.json()
@@ -42,7 +57,7 @@ async function request<T>(method: string, url: string, data?: unknown, retried =
     } catch {
       // Refresh failed — session truly over.
       window.dispatchEvent(new Event('auth:expired'))
-      throw errMsg
+      throw new ApiError(errMsg, res.status)
     }
   }
 
@@ -50,7 +65,7 @@ async function request<T>(method: string, url: string, data?: unknown, retried =
     window.dispatchEvent(new Event('auth:expired'))
   }
 
-  throw errMsg
+  throw new ApiError(errMsg, res.status)
 }
 
 export const api = {

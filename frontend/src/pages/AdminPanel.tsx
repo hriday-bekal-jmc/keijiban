@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Shield, ChevronDown, X, Plus, Check, FileText, PenSquare, Trash2, Pin, User as UserIcon, RefreshCw, Heart, MessageCircle, Bookmark, Smile, Edit3, ExternalLink, UserPlus, Webhook, Upload, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Shield, ChevronDown, ChevronUp, X, Plus, Check, FileText, PenSquare, Trash2, Pin, User as UserIcon, RefreshCw, Heart, MessageCircle, Bookmark, Smile, Edit3, ExternalLink, UserPlus, Webhook, Upload, CheckCircle2, AlertCircle } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
 import { initials as initialsOf } from '../lib/postMeta'
-import type { User, Department } from '../types'
+import { useManagedList, useActiveList, listKey, refreshAfterListChange, type ListKind } from '../lib/managedLists'
+import PostThumbnail from '../components/PostThumbnail'
+import type { User, Department, ThumbnailPreset, ThumbnailPattern, Branch } from '../types'
 
 const PILL_SPRING = { type: 'spring', stiffness: 480, damping: 30, mass: 0.7 } as const
 
@@ -21,6 +23,8 @@ interface AdminUser extends User {
 
 interface EditState {
   department_id: string
+  /** '' = unassigned (sees 全社 posts only) */
+  branch_id: string
   role: 'member' | 'admin'
   full_name: string
   can_post: boolean
@@ -61,8 +65,11 @@ interface EditDrawerProps {
 function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
   const queryClient = useQueryClient()
   const toast = useToast()
+  const branches = useActiveList<Branch & ManagedItem>('branches')
+
   const [form, setForm] = useState<EditState>({
     department_id:    user.department_id,
+    branch_id:        user.branch_id ?? '',
     role:             user.role,
     full_name:        user.full_name,
     can_post:         user.can_post,
@@ -70,7 +77,8 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
   })
 
   const save = useMutation<unknown, Error, EditState>({
-    mutationFn: (body) => api.put(`/admin/users/${user.id}`, body),
+    // '' means "unassign", which the API expects as an explicit null
+    mutationFn: (body) => api.put(`/admin/users/${user.id}`, { ...body, branch_id: body.branch_id || null }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       toast.success('ユーザー情報を更新しました')
@@ -83,6 +91,7 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
 
   const changed =
     form.department_id    !== user.department_id ||
+    form.branch_id        !== (user.branch_id ?? '') ||
     form.role             !== user.role ||
     form.full_name        !== user.full_name ||
     form.can_post         !== user.can_post ||
@@ -93,7 +102,7 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      className="kb-sheet-layer fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
       style={{ background: 'rgba(58,42,26,0.45)', backdropFilter: 'blur(4px)' }}
       onClick={onClose}
     >
@@ -103,8 +112,8 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
         exit={{ opacity: 0, y: 40 }}
         transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
         onClick={e => e.stopPropagation()}
-        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col"
-        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', maxHeight: 'calc(100dvh - 80px)' }}
+        className="kb-sheet w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col"
+        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid #E4D4B8' }}>
@@ -147,6 +156,26 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
               >
                 {departments.map(d => (
                   <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" color="#A8906E" />
+            </div>
+          </div>
+
+          {/* Branch — independent of department; controls which branch-scoped
+              posts this user can see (全社 posts always reach everyone) */}
+          <div>
+            <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">拠点</label>
+            <div className="relative">
+              <select
+                value={form.branch_id}
+                onChange={e => setForm(f => ({ ...f, branch_id: e.target.value }))}
+                className="w-full appearance-none px-3.5 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none pr-9"
+                style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+              >
+                <option value="">未割り当て（全社の投稿のみ）</option>
+                {branches.map(b => (
+                  <option key={b.id} value={b.id}>{b.name}{b.is_active ? '' : '（無効）'}</option>
                 ))}
               </select>
               <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" color="#A8906E" />
@@ -251,75 +280,17 @@ function EditDrawer({ user, departments, onClose }: EditDrawerProps) {
   )
 }
 
-// ── add department modal ──────────────────────────────────────────────────────
-
-function AddDeptModal({ onClose }: { onClose: () => void }) {
-  const queryClient = useQueryClient()
-  const toast = useToast()
-  const [name, setName] = useState('')
-
-  const add = useMutation<unknown, Error, string>({
-    mutationFn: (n) => api.post('/admin/departments', { name: n }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['departments'] })
-      toast.success('部署を追加しました')
-      onClose()
-    },
-    onError: () => {
-      toast.error('部署の追加に失敗しました')
-    },
-  })
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(58,42,26,0.45)', backdropFilter: 'blur(4px)' }}
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-        transition={{ duration: 0.18 }}
-        onClick={e => e.stopPropagation()}
-        className="w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4"
-        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
-      >
-        <div className="font-extrabold text-[15px] text-brand-dark">部署を追加</div>
-        <input
-          autoFocus
-          value={name}
-          onChange={e => setName(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && name.trim()) add.mutate(name.trim()) }}
-          placeholder="部署名"
-          className="px-3.5 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none"
-          style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
-        />
-        <div className="flex gap-2">
-          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl text-[13px] font-bold text-brand-muted" style={{ background: '#F0E8D8' }}>
-            キャンセル
-          </button>
-          <button
-            onClick={() => { if (name.trim()) add.mutate(name.trim()) }}
-            disabled={!name.trim() || add.isPending}
-            className="flex-1 py-2.5 rounded-xl text-[13px] font-extrabold text-white disabled:opacity-40"
-            style={{ background: '#E8732A' }}
-          >
-            追加
-          </button>
-        </div>
-      </motion.div>
-    </motion.div>
-  )
-}
-
 // ── add user modal ────────────────────────────────────────────────────────────
 
 interface AddUserForm {
   email: string
   full_name: string
   department_id: string
+  /** '' = unassigned: the user sees 全社 posts only. */
+  branch_id: string
   role: 'member' | 'admin'
   can_post: boolean
+  chat_webhook_url: string
 }
 
 function AddUserModal({ departments, onClose }: { departments: Department[]; onClose: () => void }) {
@@ -332,16 +303,23 @@ function AddUserModal({ departments, onClose }: { departments: Department[]; onC
     return () => { document.body.style.overflow = prev }
   }, [])
 
+  const branches = useActiveList<Branch & ManagedItem>('branches')
+
   const [form, setForm] = useState<AddUserForm>({
     email: '',
     full_name: '',
     department_id: departments[0]?.id ?? '',
+    branch_id: '',
     role: 'member',
     can_post: true,
+    chat_webhook_url: '',
   })
 
   const add = useMutation<unknown, Error, AddUserForm>({
-    mutationFn: (body) => api.post('/admin/users', body),
+    // '' means "leave unassigned"/"no webhook", which the API expects as null
+    mutationFn: (body) => api.post('/admin/users', {
+      ...body, branch_id: body.branch_id || null, chat_webhook_url: body.chat_webhook_url || null,
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       toast.success('ユーザーを追加しました')
@@ -357,7 +335,7 @@ function AddUserModal({ departments, onClose }: { departments: Department[]; onC
   return (
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center pb-24 px-0 sm:p-4"
+      className="kb-sheet-layer fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
       style={{ background: 'rgba(58,42,26,0.45)', backdropFilter: 'blur(4px)' }}
       onClick={onClose}
     >
@@ -365,8 +343,8 @@ function AddUserModal({ departments, onClose }: { departments: Department[]; onC
         initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 40 }}
         transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
         onClick={e => e.stopPropagation()}
-        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl flex flex-col"
-        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', maxHeight: 'calc(100dvh - 120px)' }}
+        className="kb-sheet w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl flex flex-col"
+        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
       >
         {/* Header — never scrolls */}
         <div className="flex-shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid #E4D4B8' }}>
@@ -426,6 +404,23 @@ function AddUserModal({ departments, onClose }: { departments: Department[]; onC
             </div>
           </div>
 
+          {/* Branch — decides which branch's posts this user sees */}
+          <div>
+            <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">拠点</label>
+            <div className="relative">
+              <select
+                value={form.branch_id}
+                onChange={e => setForm(f => ({ ...f, branch_id: e.target.value }))}
+                className="w-full appearance-none px-3.5 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none pr-9"
+                style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+              >
+                <option value="">未割り当て（全社の投稿のみ）</option>
+                {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" color="#A8906E" />
+            </div>
+          </div>
+
           {/* Role */}
           <div>
             <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">権限</label>
@@ -474,6 +469,22 @@ function AddUserModal({ departments, onClose }: { departments: Department[]; onC
             </button>
           </div>
 
+          {/* Google Chat webhook — optional, same field as the edit drawer */}
+          <div>
+            <label className="block text-[11px] font-bold text-brand-muted mb-1.5 uppercase tracking-wide">
+              Google Chat 通知先<span className="normal-case font-medium ml-1 opacity-70">（任意）</span>
+            </label>
+            <input
+              value={form.chat_webhook_url}
+              onChange={e => setForm(f => ({ ...f, chat_webhook_url: e.target.value }))}
+              placeholder="https://chat.googleapis.com/..."
+              className="w-full px-3.5 py-2.5 rounded-xl text-[13px] text-brand-dark outline-none"
+              style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+              onFocus={e => e.target.style.borderColor = '#E8732A'}
+              onBlur={e => e.target.style.borderColor = '#E4D4B8'}
+            />
+          </div>
+
           <button
             onClick={() => { if (valid) add.mutate(form) }}
             disabled={!valid || add.isPending}
@@ -496,13 +507,12 @@ export default function AdminPanel() {
   const navigate = useNavigate()
   const location = useLocation()
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null)
-  const [addDeptOpen, setAddDeptOpen] = useState(false)
   const [addUserOpen, setAddUserOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [usersPage, setUsersPage] = useState(0)
   const USERS_PER_PAGE = 30
-  const [activeTab, setActiveTab] = useState<'users' | 'departments' | 'logs' | 'webhooks'>('users')
+  const [activeTab, setActiveTab] = useState<'users' | 'masters' | 'thumbnails' | 'logs' | 'webhooks'>('users')
 
   // Debounce so search-as-you-type doesn't fire a query per keystroke,
   // and reset to page 0 whenever the search term changes.
@@ -530,15 +540,10 @@ export default function AdminPanel() {
     staleTime: 30_000,
   })
 
-  const { data: deptsData } = useQuery<{ departments: Department[] }>({
-    queryKey: ['departments'],
-    queryFn: () => api.get('/admin/departments'),
-    staleTime: Infinity,
-  })
+  const departments = useActiveList<Department & ManagedItem>('departments')
 
   const filtered = usersData?.users ?? []
   const usersTotal = usersData?.total ?? 0
-  const departments = deptsData?.departments ?? []
 
   if (me?.role !== 'admin') {
     return (
@@ -563,7 +568,8 @@ export default function AdminPanel() {
         <div className="flex gap-1 p-0.5 rounded-full" style={{ background: 'rgba(58,42,26,0.08)' }}>
           {([
             { id: 'users',       label: `ユーザー (${usersTotal})` },
-            { id: 'departments', label: '部署' },
+            { id: 'masters',     label: 'マスタ管理' },
+            { id: 'thumbnails',  label: 'サムネイル' },
             { id: 'logs',        label: 'ログ' },
             { id: 'webhooks',    label: 'Chat通知' },
           ] as const).map(({ id, label }) => {
@@ -620,15 +626,12 @@ export default function AdminPanel() {
               <div className="w-8 h-8 border-2 border-brand-orange border-t-transparent rounded-full animate-spin" />
             </div>
           ) : (
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2 kb-list">
               {filtered.map((u, i) => {
                 const { bg, color, label } = ROLE_COLORS[u.role]
                 return (
-                  <motion.div
+                  <div
                     key={u.id}
-                    initial={{ opacity: 0, y: 5 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: Math.min(i * 0.02, 0.2) }}
                     className="flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all"
                     style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
                     onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 3px 14px rgba(100,60,10,0.08)')}
@@ -675,7 +678,7 @@ export default function AdminPanel() {
                         <Edit3 size={12} strokeWidth={2.5} />
                       </button>
                     </div>
-                  </motion.div>
+                  </div>
                 )
               })}
             </div>
@@ -706,38 +709,8 @@ export default function AdminPanel() {
         </div>
       )}
 
-      {activeTab === 'departments' && (
-        <div className="max-w-[480px]">
-          <button
-            onClick={() => setAddDeptOpen(true)}
-            className="flex items-center gap-2 mb-4 px-4 py-2.5 rounded-xl font-bold text-[13px] text-white transition-opacity"
-            style={{ background: '#E8732A' }}
-          >
-            <Plus size={15} strokeWidth={2.5} />
-            部署を追加
-          </button>
-
-          <div className="flex flex-col gap-2">
-            {departments.map((d, i) => (
-              <div
-                key={d.id}
-                className="flex items-center gap-3 px-4 py-3.5 rounded-2xl"
-                style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
-              >
-                <div
-                  className="w-8 h-8 rounded-xl flex items-center justify-center text-white font-extrabold text-[11px]"
-                  style={{ background: DEPT_AVATAR[i % DEPT_AVATAR.length] }}
-                >
-                  {d.name[0]}
-                </div>
-                <div className="flex-1 font-semibold text-[13px] text-brand-dark">{d.name}</div>
-                <Check size={14} color="#1A7A48" strokeWidth={2.5} />
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
+      {activeTab === 'masters' && <MastersTab />}
+      {activeTab === 'thumbnails' && <ThumbnailsTab />}
       {activeTab === 'logs' && <AuditLogTab />}
       {activeTab === 'webhooks' && <WebhooksTab />}
 
@@ -749,7 +722,6 @@ export default function AdminPanel() {
             onClose={() => setEditingUser(null)}
           />
         )}
-        {addDeptOpen && <AddDeptModal onClose={() => setAddDeptOpen(false)} />}
         {addUserOpen && <AddUserModal departments={departments} onClose={() => setAddUserOpen(false)} />}
       </AnimatePresence>
     </div>
@@ -1037,7 +1009,7 @@ function AuditLogTab() {
           <div className="text-brand-muted text-[13px]">ログがありません</div>
         </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5 kb-list">
           {logs.map((entry, i) => {
             const meta = ACTION_META[entry.action] ?? { label: entry.action, bg: '#F0E8D8', color: '#7A5C30', Icon: FileText }
             const { Icon } = meta
@@ -1046,11 +1018,8 @@ function AuditLogTab() {
             const timeStr = time.toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
             return (
-              <motion.div
+              <div
                 key={entry.id}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: Math.min(i * 0.015, 0.2) }}
                 className="flex items-center gap-3 px-4 py-3 rounded-xl"
                 style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
               >
@@ -1098,7 +1067,7 @@ function AuditLogTab() {
 
                 {/* Time */}
                 <div className="text-[11px] text-brand-muted flex-shrink-0">{timeStr}</div>
-              </motion.div>
+              </div>
             )
           })}
         </div>
@@ -1124,6 +1093,469 @@ function AuditLogTab() {
           >
             次へ →
           </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Master data tab ───────────────────────────────────────────────────────────
+
+/**
+ * Every admin-curated list in the app. They share one table shape (named,
+ * ordered, deactivatable) and one API contract, so they share one UI.
+ *
+ * To add a future list: create the table with the same columns, mount it with
+ * `managedListRouter` in backend/src/index.ts, and add one entry here.
+ */
+const MANAGED_LISTS: Array<{
+  kind: ListKind; label: string; hasColor: boolean; hint: string
+}> = [
+  { kind: 'departments', label: '部署', hasColor: false,
+    hint: '職務のグループ。投稿の公開範囲を「部署内」にしたときの対象です。' },
+  { kind: 'branches', label: '拠点', hasColor: false,
+    hint: '勤務地。ユーザーに割り当てると、その拠点向けの投稿が見えるようになります。' },
+  { kind: 'categories', label: 'カテゴリ', hasColor: true,
+    hint: '投稿に付けるカテゴリ。1つの投稿に複数選べます。' },
+]
+
+interface ManagedItem {
+  id: string
+  name: string
+  color?: string
+  sort_order: number
+  is_active: boolean
+}
+
+function ManagedList({ kind, label, hasColor, hint }: (typeof MANAGED_LISTS)[number]) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const [draft, setDraft] = useState<Partial<ManagedItem> | null>(null)
+  const endpoint = `/${kind}`
+
+  // Same cache key the composer and feed filters read from, so a save here
+  // updates them in place.
+  const { data, isLoading } = useManagedList<ManagedItem>(kind)
+  const items = data?.items ?? []
+
+  const refresh = () => refreshAfterListChange(queryClient, kind)
+
+  const save = useMutation<unknown, Error, Partial<ManagedItem>>({
+    mutationFn: (v) => v.id ? api.put(`${endpoint}/${v.id}`, v) : api.post(endpoint, v),
+    onSuccess: () => { refresh(); setDraft(null); toast.success(`${label}を保存しました`) },
+    onError: (e) => toast.error(e.message || '保存に失敗しました'),
+  })
+
+  const remove = useMutation<unknown, Error, string>({
+    mutationFn: (id) => api.delete(`${endpoint}/${id}`),
+    onSuccess: () => { refresh(); toast.success(`${label}を削除しました`) },
+    // The API returns a 409 with a readable reason when the row is still in use
+    onError: (e) => toast.error(e.message || '削除に失敗しました'),
+  })
+
+  /**
+   * Reorder by position rather than by editing numbers. Renumbers in steps of
+   * 10 so a later insert can still be slotted between two rows, and only PUTs
+   * the rows whose value actually changed (normally two).
+   */
+  const move = useMutation<unknown, Error, { from: number; to: number }, { prev?: { items: ManagedItem[] } }>({
+    mutationFn: async ({ from, to }) => {
+      const next = [...items]
+      next.splice(to, 0, ...next.splice(from, 1))
+      const changed = next
+        .map((it, i) => ({ it, sort_order: (i + 1) * 10 }))
+        .filter(({ it, sort_order }) => it.sort_order !== sort_order)
+      await Promise.all(changed.map(({ it, sort_order }) =>
+        api.put(`${endpoint}/${it.id}`, { sort_order })))
+    },
+    // Apply locally first so the row moves under the cursor immediately
+    onMutate: ({ from, to }) => {
+      const prev = queryClient.getQueryData<{ items: ManagedItem[] }>(listKey(kind))
+      queryClient.setQueryData(listKey(kind), (old: { items: ManagedItem[] } | undefined) => {
+        if (!old) return old
+        const next = [...old.items]
+        next.splice(to, 0, ...next.splice(from, 1))
+        return { items: next.map((it, i) => ({ ...it, sort_order: (i + 1) * 10 })) }
+      })
+      return { prev }
+    },
+    onError: (e, _v, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(listKey(kind), ctx.prev)
+      toast.error(e.message || '並び替えに失敗しました')
+    },
+    onSettled: () => refresh(),
+  })
+
+  const set = (patch: Partial<ManagedItem>) => setDraft(d => ({ ...d, ...patch }))
+
+  return (
+    <div>
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <p className="text-[11.5px] text-brand-muted">{hint}</p>
+        <button
+          onClick={() => setDraft({
+            name: '',
+            // Slot the new row after the current last one
+            sort_order: (items.length ? items[items.length - 1].sort_order : 0) + 10,
+            is_active: true,
+            ...(hasColor ? { color: '#1E5FA8' } : {}),
+          })}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold text-[12.5px] text-white flex-shrink-0"
+          style={{ background: '#E8732A' }}
+        >
+          <Plus size={14} strokeWidth={2.5} />追加
+        </button>
+      </div>
+
+      {draft && (
+        <div className="rounded-2xl p-4 mb-4 flex flex-col gap-3" style={{ background: '#FFFDF7', border: '1.5px solid #E8732A' }}>
+          <div className="flex gap-2">
+            <input
+              value={draft.name ?? ''}
+              onChange={e => set({ name: e.target.value })}
+              placeholder={`${label}名`}
+              autoFocus
+              onKeyDown={e => { if (e.key === 'Enter' && draft.name?.trim()) save.mutate(draft) }}
+              className="flex-1 px-3 py-2 rounded-xl text-[12.5px] text-brand-dark outline-none"
+              style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+            />
+            {hasColor && (
+              <input
+                type="color"
+                value={draft.color ?? '#1E5FA8'}
+                onChange={e => set({ color: e.target.value.toUpperCase() })}
+                title="色"
+                className="w-10 h-9 rounded cursor-pointer flex-shrink-0"
+                style={{ border: '1.5px solid #E4D4B8' }}
+              />
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1.5 text-[11.5px] font-bold text-brand-muted mr-auto">
+              <input
+                type="checkbox"
+                checked={draft.is_active ?? true}
+                onChange={e => set({ is_active: e.target.checked })}
+                style={{ accentColor: '#E8732A' }}
+              />
+              有効
+            </label>
+            <button
+              onClick={() => setDraft(null)}
+              className="px-4 py-2 rounded-xl font-bold text-[12.5px]"
+              style={{ background: '#F0E8D8', color: '#7A5C30' }}
+            >
+              キャンセル
+            </button>
+            <button
+              onClick={() => save.mutate(draft)}
+              disabled={save.isPending || !draft.name?.trim()}
+              className="px-5 py-2 rounded-xl font-extrabold text-[12.5px] text-white disabled:opacity-50"
+              style={{ background: '#3A2A1A' }}
+            >
+              {save.isPending ? '保存中…' : '保存'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="flex flex-col gap-2">
+          {[0, 1, 2].map(i => <div key={i} className="h-12 rounded-xl animate-pulse" style={{ background: '#E4D4B8' }} />)}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-12 text-brand-muted text-[13px]">まだ{label}がありません</div>
+      ) : (
+        <div className="flex flex-col gap-2 kb-list">
+          {items.map((it, i) => (
+            <div
+              key={it.id}
+              className="flex items-center gap-3 px-4 py-3 rounded-xl"
+              style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', opacity: it.is_active ? 1 : 0.5 }}
+            >
+              {/* Order is set by moving rows, not by typing a number */}
+              <div className="flex flex-col flex-shrink-0 -my-1">
+                <button
+                  onClick={() => move.mutate({ from: i, to: i - 1 })}
+                  disabled={i === 0}
+                  className="disabled:opacity-25 transition-opacity"
+                  style={{ color: '#A8906E' }}
+                  title="上へ"
+                >
+                  <ChevronUp size={14} strokeWidth={3} />
+                </button>
+                <button
+                  onClick={() => move.mutate({ from: i, to: i + 1 })}
+                  disabled={i === items.length - 1}
+                  className="disabled:opacity-25 transition-opacity"
+                  style={{ color: '#A8906E' }}
+                  title="下へ"
+                >
+                  <ChevronDown size={14} strokeWidth={3} />
+                </button>
+              </div>
+              <span
+                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                style={{ background: hasColor ? (it.color ?? '#A8906E') : '#D4C4A8' }}
+              />
+              <span className="flex-1 min-w-0 truncate text-[13px] font-bold text-brand-dark">
+                {it.name}
+                {!it.is_active && <span className="text-brand-muted font-normal text-[11px]">（無効）</span>}
+              </span>
+              <button
+                onClick={() => setDraft(it)}
+                className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+                style={{ background: '#F0E8D8', color: '#7A5C30' }}
+                title="編集"
+              >
+                <Edit3 size={12} strokeWidth={2.5} />
+              </button>
+              <button
+                onClick={() => { if (confirm(`「${it.name}」を削除しますか？`)) remove.mutate(it.id) }}
+                className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+                style={{ background: '#F0E8D8', color: '#C0392B' }}
+                title="削除"
+              >
+                <Trash2 size={12} strokeWidth={2.5} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MastersTab() {
+  const [active, setActive] = useState(MANAGED_LISTS[0].kind)
+  const current = MANAGED_LISTS.find(l => l.kind === active) ?? MANAGED_LISTS[0]
+
+  return (
+    <div className="max-w-[640px]">
+      <div className="flex gap-1 p-0.5 rounded-full mb-4 w-fit" style={{ background: 'rgba(58,42,26,0.08)' }}>
+        {MANAGED_LISTS.map(l => (
+          <button
+            key={l.kind}
+            onClick={() => setActive(l.kind)}
+            className="px-4 py-1.5 rounded-full text-[12px] font-bold transition-colors"
+            style={active === l.kind
+              ? { background: '#FFFDF7', color: '#E8732A', boxShadow: '0 1px 4px rgba(60,30,10,0.08)' }
+              : { color: '#8A7A68' }}
+          >
+            {l.label}
+          </button>
+        ))}
+      </div>
+      {/* Remount on switch so the inline editor never carries over */}
+      <ManagedList {...current} key={current.kind} />
+    </div>
+  )
+}
+
+// ── Thumbnail designs tab ─────────────────────────────────────────────────────
+
+const PATTERNS: Array<{ id: ThumbnailPattern; label: string }> = [
+  { id: 'none', label: 'なし' },
+  { id: 'dots', label: 'ドット' },
+  { id: 'grid', label: 'グリッド' },
+  { id: 'rays', label: '放射' },
+]
+
+const BLANK_PRESET: Partial<ThumbnailPreset> = {
+  name: '', background: 'linear-gradient(135deg, #F5A460 0%, #E8732A 100%)',
+  text_color: '#FFFFFF', pattern: 'none', sort_order: 0, is_active: true,
+}
+
+function ThumbnailsTab() {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const [draft, setDraft] = useState<Partial<ThumbnailPreset> | null>(null)
+
+  const { data, isLoading } = useQuery<{ presets: ThumbnailPreset[] }>({
+    queryKey: ['thumbnail-presets'],
+    queryFn: () => api.get('/thumbnails'),
+  })
+  const presets = data?.presets ?? []
+
+  // Posts embed the preset's styling, so refresh them too after any change
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['thumbnail-presets'] })
+    queryClient.invalidateQueries({ queryKey: ['posts'] })
+    queryClient.invalidateQueries({ queryKey: ['post'] })
+  }
+
+  const save = useMutation<unknown, Error, Partial<ThumbnailPreset>>({
+    mutationFn: (p) => p.id ? api.put(`/thumbnails/${p.id}`, p) : api.post('/thumbnails', p),
+    onSuccess: () => { refresh(); setDraft(null); toast.success('デザインを保存しました') },
+    onError: (e) => toast.error(e.message || '保存に失敗しました'),
+  })
+
+  const remove = useMutation<unknown, Error, string>({
+    mutationFn: (id) => api.delete(`/thumbnails/${id}`),
+    onSuccess: () => { refresh(); toast.success('デザインを削除しました') },
+    onError: (e) => toast.error(e.message || '削除に失敗しました'),
+  })
+
+  const set = (patch: Partial<ThumbnailPreset>) => setDraft(d => ({ ...d, ...patch }))
+
+  return (
+    <div className="max-w-[700px]">
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-[11.5px] text-brand-muted">
+          投稿者が選べるサムネイルの背景デザイン。編集すると、そのデザインを使用中の投稿すべてに反映されます。
+        </p>
+        <button
+          onClick={() => setDraft({ ...BLANK_PRESET })}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold text-[12.5px] text-white flex-shrink-0 ml-3"
+          style={{ background: '#E8732A' }}
+        >
+          <Plus size={14} strokeWidth={2.5} />追加
+        </button>
+      </div>
+
+      {/* Inline editor */}
+      {draft && (
+        <div className="rounded-2xl p-4 mb-4 flex flex-col gap-3" style={{ background: '#FFFDF7', border: '1.5px solid #E8732A' }}>
+          <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #E4D4B8' }}>
+            <PostThumbnail
+              title={draft.name || 'プレビュー'}
+              emoji="🎉"
+              background={draft.background}
+              textColor={draft.text_color}
+              pattern={draft.pattern}
+              height={110}
+              compact
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              value={draft.name ?? ''}
+              onChange={e => set({ name: e.target.value })}
+              placeholder="デザイン名"
+              className="flex-1 px-3 py-2 rounded-xl text-[12.5px] text-brand-dark outline-none"
+              style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+            />
+            <input
+              type="number"
+              value={draft.sort_order ?? 0}
+              onChange={e => set({ sort_order: parseInt(e.target.value) || 0 })}
+              title="並び順"
+              className="w-20 px-3 py-2 rounded-xl text-[12.5px] text-brand-dark outline-none"
+              style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-[10.5px] font-bold text-brand-muted mb-1 uppercase tracking-wide">
+              背景（グラデーションまたは色のみ）
+            </label>
+            <input
+              value={draft.background ?? ''}
+              onChange={e => set({ background: e.target.value })}
+              placeholder="linear-gradient(135deg, #F5A460 0%, #E8732A 100%)"
+              className="w-full px-3 py-2 rounded-xl text-[11.5px] text-brand-dark outline-none font-mono"
+              style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+            />
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <label className="flex items-center gap-2 text-[11.5px] font-bold text-brand-muted">
+              文字色
+              <input
+                type="color"
+                value={draft.text_color ?? '#FFFFFF'}
+                onChange={e => set({ text_color: e.target.value.toUpperCase() })}
+                className="w-9 h-8 rounded cursor-pointer"
+                style={{ border: '1.5px solid #E4D4B8' }}
+              />
+            </label>
+            <div className="flex gap-1">
+              {PATTERNS.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => set({ pattern: p.id })}
+                  className="px-2.5 py-1 rounded-full text-[11px] font-bold"
+                  style={draft.pattern === p.id
+                    ? { background: '#E8732A', color: '#FFFDF7' }
+                    : { background: '#F0E8D8', color: '#7A5C30' }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1.5 text-[11.5px] font-bold text-brand-muted ml-auto">
+              <input
+                type="checkbox"
+                checked={draft.is_active ?? true}
+                onChange={e => set({ is_active: e.target.checked })}
+                style={{ accentColor: '#E8732A' }}
+              />
+              有効
+            </label>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => save.mutate(draft)}
+              disabled={save.isPending || !draft.name?.trim()}
+              className="flex-1 py-2.5 rounded-xl font-extrabold text-[13px] text-white disabled:opacity-50"
+              style={{ background: '#3A2A1A' }}
+            >
+              {save.isPending ? '保存中…' : '保存'}
+            </button>
+            <button
+              onClick={() => setDraft(null)}
+              className="px-5 py-2.5 rounded-xl font-bold text-[13px]"
+              style={{ background: '#F0E8D8', color: '#7A5C30' }}
+            >
+              キャンセル
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+          {[0, 1, 2, 3, 4, 5].map(i => (
+            <div key={i} className="h-24 rounded-xl animate-pulse" style={{ background: '#E4D4B8' }} />
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+          {presets.map(p => (
+            <div key={p.id} className="rounded-xl overflow-hidden" style={{ border: '1px solid #E4D4B8', opacity: p.is_active ? 1 : 0.45 }}>
+              <PostThumbnail
+                title={p.name}
+                background={p.background}
+                textColor={p.text_color}
+                pattern={p.pattern}
+                height={74}
+                compact
+              />
+              <div className="flex items-center gap-1 px-2 py-1.5" style={{ background: '#FFFDF7' }}>
+                <span className="flex-1 min-w-0 truncate text-[11.5px] font-bold text-brand-dark">
+                  {p.name}{!p.is_active && <span className="text-brand-muted font-normal">（無効）</span>}
+                </span>
+                <button
+                  onClick={() => setDraft(p)}
+                  className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+                  style={{ background: '#F0E8D8', color: '#7A5C30' }}
+                  title="編集"
+                >
+                  <Edit3 size={11} strokeWidth={2.5} />
+                </button>
+                <button
+                  onClick={() => { if (confirm(`「${p.name}」を削除しますか？`)) remove.mutate(p.id) }}
+                  className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+                  style={{ background: '#F0E8D8', color: '#C0392B' }}
+                  title="削除"
+                >
+                  <Trash2 size={11} strokeWidth={2.5} />
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

@@ -79,7 +79,7 @@ export default function CommentsPanel({ postId, postTitle, onClose }: CommentsPa
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.18 }}
-        className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+        className="kb-sheet-layer fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
         style={{ background: 'rgba(58,42,26,0.45)', backdropFilter: 'blur(4px)' }}
         onClick={onClose}
       >
@@ -90,11 +90,10 @@ export default function CommentsPanel({ postId, postTitle, onClose }: CommentsPa
           exit={{ opacity: 0, y: 50 }}
           transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
           onClick={(e: React.MouseEvent) => e.stopPropagation()}
-          className="w-full sm:max-w-lg flex flex-col rounded-t-3xl sm:rounded-3xl overflow-hidden"
+          className="kb-sheet w-full sm:max-w-lg flex flex-col rounded-t-3xl sm:rounded-3xl overflow-hidden"
           style={{
             background: '#FFFDF7',
             border: '1px solid #E4D4B8',
-            maxHeight: '80vh',
           }}
         >
           {/* Header */}
@@ -127,12 +126,10 @@ export default function CommentsPanel({ postId, postTitle, onClose }: CommentsPa
               </div>
             )}
 
+            <div className="flex flex-col gap-4 kb-list">
             {comments.map((c, i) => (
-              <motion.div
+              <div
                 key={c.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.03 }}
                 className="flex gap-2.5 items-start"
               >
                 <UserHoverCard userId={c.author_id} userName={c.author_name}>
@@ -169,8 +166,9 @@ export default function CommentsPanel({ postId, postTitle, onClose }: CommentsPa
                     <Trash2 size={13} strokeWidth={2} />
                   </button>
                 )}
-              </motion.div>
+              </div>
             ))}
+            </div>
           </div>
 
           {/* Input */}

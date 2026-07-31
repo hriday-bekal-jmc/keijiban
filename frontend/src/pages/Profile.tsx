@@ -6,6 +6,7 @@ import { Settings, X, Heart, MessageCircle, Pin, Camera, Trash2 } from 'lucide-r
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { postTypeColor, initials as initialsOf } from '../lib/postMeta'
+import { colorFor } from '../lib/colors'
 
 // ── Vibe presets ──────────────────────────────────────────────────────────────
 
@@ -153,6 +154,77 @@ function VibePicker({ current, onClose, onSet, onClear }: VibePickerProps) {
         )}
       </motion.div>
     </motion.div>
+  )
+}
+
+// ── Vibe board ────────────────────────────────────────────────────────────────
+
+interface VibingUser {
+  id: string
+  full_name: string
+  avatar_url: string | null
+  vibe_emoji: string | null
+  vibe_label: string | null
+}
+
+/** Today's moods across the company. Shown on the profile of members who
+ *  cannot post, where the posts grid would otherwise always be empty. */
+function VibeBoard() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { data } = useQuery<{ users: VibingUser[] }>({
+    queryKey: ['vibing'],
+    queryFn: () => api.get('/users/vibing'),
+    staleTime: 60_000,
+  })
+  const users = data?.users ?? []
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-1.5 h-1.5 rounded-full" style={{ background: '#E8732A' }} />
+        <span className="font-extrabold text-[14px] text-brand-dark">今日のみんなの気分</span>
+        {users.length > 0 && (
+          <span className="text-brand-muted font-semibold text-[12px]">({users.length})</span>
+        )}
+      </div>
+
+      {users.length === 0 ? (
+        <div className="text-center py-12 rounded-2xl" style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}>
+          <div className="text-4xl mb-2">🌱</div>
+          <div className="font-extrabold text-brand-dark text-[13px] mb-1">まだ誰も気分を設定していません</div>
+          <div className="text-[11.5px] text-brand-muted">上のアイコンから最初に設定してみましょう</div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2 kb-list">
+          {users.map(v => (
+            <button
+              key={v.id}
+              onClick={() => navigate(`/users/${v.id}`, { state: { background: location } })}
+              className="flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-shadow"
+              style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
+              onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 3px 14px rgba(100,60,10,0.09)')}
+              onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
+            >
+              {v.avatar_url ? (
+                <img src={v.avatar_url} alt={v.full_name} className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
+              ) : (
+                <div className="w-9 h-9 rounded-full flex items-center justify-center text-white font-extrabold text-[11px] flex-shrink-0"
+                  style={{ background: colorFor(v.id) }}>
+                  {initialsOf(v.full_name)}
+                </div>
+              )}
+              <span className="flex-1 min-w-0 truncate font-bold text-[13px] text-brand-dark">{v.full_name}</span>
+              <span className="flex items-center gap-1.5 text-[11.5px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0"
+                style={{ background: '#FDE8D0', color: '#C05A18' }}>
+                <span className="text-[14px] leading-none">{v.vibe_emoji}</span>
+                {v.vibe_label && <span className="hidden sm:inline">{v.vibe_label}</span>}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -589,7 +661,12 @@ export default function Profile() {
       </AnimatePresence>
 
       {/* ── Posts grid ── */}
-      <div>
+      {/* Members without post permission have no posts, so the section below
+          would always be an empty state. Their page is mostly chrome, so give
+          the space to the vibe board instead — something they can actually use. */}
+      {!user?.can_post && <VibeBoard />}
+
+      <div className={user?.can_post ? '' : 'hidden'}>
         <div className="flex items-center gap-2 mb-3">
           <div className="w-1.5 h-1.5 rounded-full" style={{ background: '#E8732A' }} />
           <span className="font-extrabold text-[14px] text-brand-dark">投稿</span>
@@ -610,20 +687,20 @@ export default function Profile() {
             <div className="text-[12px] text-brand-muted">最初の投稿を作成しましょう</div>
           </motion.div>
         ) : (
-          <div className="grid grid-cols-2 gap-2.5">
-            {myPosts.map((post, i) => (
-              <motion.div
+          <div className="grid grid-cols-2 gap-2.5 kb-grid">
+            {myPosts.map((post) => (
+              <div
                 key={post.id}
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: Math.min(i * 0.04, 0.3), duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
                 onClick={() => {
                   const existingBg = (location.state as { background?: unknown } | null)?.background
                   navigate(`/posts/${post.id}`, { state: { background: existingBg ?? location } })
                 }}
-                className="cursor-pointer rounded-2xl p-3.5 flex flex-col gap-2"
+                className="cursor-pointer rounded-2xl p-3.5 flex flex-col gap-2 transition-shadow"
                 style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
-                whileHover={{ y: -2, boxShadow: '0 4px 16px rgba(58,42,26,0.10)' }}
+                // Shadow only, no lift: the entrance animation owns `transform`
+                // (fill-mode: both), so a hover transform would be overridden.
+                onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 4px 16px rgba(58,42,26,0.10)')}
+                onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
               >
                 {/* Type indicator + pin */}
                 <div className="flex items-center justify-between">
@@ -669,7 +746,7 @@ export default function Profile() {
                     {post.comments_count}
                   </span>
                 </div>
-              </motion.div>
+              </div>
             ))}
           </div>
         )}

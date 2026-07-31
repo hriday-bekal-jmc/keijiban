@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs'
 import { query, UUID_RE, parsePage, logAudit } from '../config/db.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { sseManager } from '../services/sse.js'
+import { runDriveSweep } from '../services/driveSweep.js'
 import type { RequestWithUser } from '../types.js'
 
 const router = Router()
@@ -40,19 +41,30 @@ router.post('/departments', requireAdmin, async (req: Request, res: Response, ne
 // POST /api/admin/users — pre-register a user (google_id linked on first login)
 router.post('/users', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { email, full_name, department_id, role, can_post } = req.body as {
+    const { email, full_name, department_id, branch_id, role, can_post, chat_webhook_url } = req.body as {
       email?: string
       full_name?: string
       department_id?: string
+      branch_id?: string | null
       role?: string
       can_post?: boolean
+      chat_webhook_url?: string | null
     }
 
     if (!email?.trim()) return res.status(400).json({ error: 'Email required' })
     if (!full_name?.trim()) return res.status(400).json({ error: 'Name required' })
     if (!department_id || !UUID_RE.test(department_id)) return res.status(400).json({ error: 'Valid department required' })
+    // Optional: null/omitted leaves the user unassigned, seeing 全社 posts only
+    if (branch_id != null && branch_id !== '' && !UUID_RE.test(branch_id)) {
+      return res.status(400).json({ error: 'Invalid branch_id' })
+    }
     if (role !== undefined && !VALID_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role' })
     if (full_name.trim().length > MAX_NAME_LEN) return res.status(400).json({ error: `Name must be ${MAX_NAME_LEN} chars or less` })
+    if (chat_webhook_url) {
+      if (!chat_webhook_url.startsWith('https://chat.googleapis.com')) {
+        return res.status(400).json({ error: 'chat_webhook_url must start with https://chat.googleapis.com' })
+      }
+    }
 
     const normalEmail = email.trim().toLowerCase()
 
@@ -60,10 +72,11 @@ router.post('/users', requireAdmin, async (req: Request, res: Response, next: Ne
     if (existing[0]) return res.status(409).json({ error: 'User with this email already exists' })
 
     const { rows } = await query(
-      `INSERT INTO users (email, full_name, department_id, role, can_post)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, email, full_name, role, department_id, can_post, created_at`,
-      [normalEmail, full_name.trim(), department_id, role ?? 'member', can_post ?? true]
+      `INSERT INTO users (email, full_name, department_id, branch_id, role, can_post, chat_webhook_url)
+       VALUES ($1, $2, $3, $4::uuid, $5, $6, $7)
+       RETURNING id, email, full_name, role, department_id, branch_id, can_post, created_at`,
+      [normalEmail, full_name.trim(), department_id, branch_id || null,
+       role ?? 'member', can_post ?? true, chat_webhook_url || null]
     )
 
     const actorId = (req as RequestWithUser).user.id
@@ -93,8 +106,11 @@ router.get('/users', requireAdmin, async (req: Request, res: Response, next: Nex
       query(
         `SELECT u.id, u.email, u.full_name, u.avatar_url, u.role, u.can_post,
                 u.department_id, d.name AS department_name, u.created_at,
+                u.branch_id, br.name AS branch_name,
                 u.chat_webhook_url
-         FROM users u JOIN departments d ON d.id = u.department_id
+         FROM users u
+         JOIN departments d ON d.id = u.department_id
+         LEFT JOIN branches br ON br.id = u.branch_id
          ${whereMain}
          ORDER BY u.created_at DESC
          LIMIT $1 OFFSET $2`,
@@ -111,8 +127,9 @@ router.put('/users/:id', requireAdmin, async (req: Request, res: Response, next:
   try {
     if (!UUID_RE.test(req.params.id as string)) return res.status(400).json({ error: 'Invalid user ID' })
 
-    const { department_id, role, full_name, can_post, chat_webhook_url } = req.body as {
+    const { department_id, branch_id, role, full_name, can_post, chat_webhook_url } = req.body as {
       department_id?:    string
+      branch_id?:        string | null
       role?:             string
       full_name?:        string
       can_post?:         boolean
@@ -121,6 +138,10 @@ router.put('/users/:id', requireAdmin, async (req: Request, res: Response, next:
 
     if (department_id !== undefined && !UUID_RE.test(department_id)) {
       return res.status(400).json({ error: 'Invalid department_id' })
+    }
+    // null is meaningful — it unassigns the user from any branch
+    if (branch_id != null && !UUID_RE.test(branch_id)) {
+      return res.status(400).json({ error: 'Invalid branch_id' })
     }
     if (role !== undefined && !VALID_ROLES.has(role)) {
       return res.status(400).json({ error: 'Invalid role — must be member or admin' })
@@ -144,9 +165,10 @@ router.put('/users/:id', requireAdmin, async (req: Request, res: Response, next:
            full_name        = COALESCE($4, full_name),
            can_post         = COALESCE($5, can_post),
            chat_webhook_url = CASE WHEN $6::boolean THEN $7 ELSE chat_webhook_url END,
+           branch_id        = CASE WHEN $8::boolean THEN $9::uuid ELSE branch_id END,
            updated_at       = now()
        WHERE id = $1
-       RETURNING id, full_name, role, department_id, can_post, chat_webhook_url`,
+       RETURNING id, full_name, role, department_id, branch_id, can_post, chat_webhook_url`,
       [
         req.params.id,
         department_id ?? null,
@@ -155,6 +177,8 @@ router.put('/users/:id', requireAdmin, async (req: Request, res: Response, next:
         can_post ?? null,
         chat_webhook_url !== undefined,  // $6: whether to update webhook
         webhookVal ?? null,              // $7: new value (null = clear)
+        branch_id !== undefined,         // $8: whether to update branch
+        branch_id ?? null,               // $9: new value (null = unassign)
       ]
     )
     if (!rows[0]) return res.status(404).json({ error: 'User not found' })
@@ -162,6 +186,7 @@ router.put('/users/:id', requireAdmin, async (req: Request, res: Response, next:
     const actorId = (req as RequestWithUser).user.id
     const auditDetail = {
       ...(department_id    !== undefined && { department_id }),
+      ...(branch_id        !== undefined && { branch_id }),
       ...(role             !== undefined && { role }),
       ...(full_name        !== undefined && { full_name: full_name.trim() }),
       ...(can_post         !== undefined && { can_post }),
@@ -301,6 +326,23 @@ router.post('/webhooks/import', requireAdmin,
     }
   }
 )
+
+// POST /api/admin/drive/sweep — run the orphan sweep on demand.
+// ?dryRun=1 reports what would be deleted without touching anything; worth
+// running first after enabling Drive.
+router.post('/drive/sweep', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const dryRun = req.query.dryRun !== undefined
+    const result = await runDriveSweep({ dryRun })
+    logAudit((req as RequestWithUser).user.id, 'DRIVE_SWEEP', (req as RequestWithUser).user.id, result)
+    res.json(result)
+  } catch (err) {
+    // Unconfigured Drive is an operator problem, not a server fault
+    const msg = (err as Error).message
+    if (/not configured|required/i.test(msg)) return res.status(503).json({ error: msg })
+    next(err)
+  }
+})
 
 // GET /api/admin/webhooks — list users with their webhook status
 router.get('/webhooks', requireAdmin, async (_req: Request, res: Response, next: NextFunction) => {

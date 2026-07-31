@@ -28,6 +28,8 @@ router.post('/:postId', requireAuth, async (req: Request, res: Response, next: N
       return res.status(403).json({ error: 'Forbidden' })
     }
 
+    // No practical cap on how many images a post body can contain — the
+    // bound is total bytes, enforced in parseMultipart.
     const { files } = await parseMultipart(req)
     if (files.length === 0) return res.json({ attachments: [] })
 
@@ -38,7 +40,7 @@ router.post('/:postId', requireAuth, async (req: Request, res: Response, next: N
           `INSERT INTO attachments
              (post_id, drive_file_id, drive_url, file_name, mime_type, size_bytes, thumbnail_path)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
-           RETURNING id, drive_url, file_name, mime_type, size_bytes, thumbnail_path`,
+           RETURNING id, drive_file_id, drive_url, file_name, mime_type, size_bytes, thumbnail_path`,
           [
             postId,
             result.driveFileId,
@@ -67,13 +69,17 @@ router.get('/:driveFileId/content', requireAuth, async (req: Request, res: Respo
       return res.status(503).json({ error: 'Drive not configured' })
     }
 
-    const { id: userId, departmentId } = (req as RequestWithUser).user
+    const { id: userId, departmentId, branchId, role } = (req as RequestWithUser).user
 
-    const { rows } = await query(
-      `SELECT a.id FROM attachments a
+    // Match either the full-size file or its thumbnail — the thumbnail's id
+    // lives inside thumbnail_path, and Drive files are private, so this proxy
+    // is the only way to read either.
+    const { rows } = await query<{ file_name: string }>(
+      `SELECT a.file_name FROM attachments a
        JOIN posts p ON p.id = a.post_id AND p.deleted_at IS NULL
-       WHERE a.drive_file_id = $1 AND ${visibilitySQL(2, 3)}`,
-      [req.params.driveFileId, userId, departmentId]
+       WHERE (a.drive_file_id = $1 OR a.thumbnail_path = '/api/uploads/' || $1 || '/content')
+         AND ${visibilitySQL(2, 3, 4, role === 'admin')}`,
+      [req.params.driveFileId, userId, departmentId, branchId]
     )
 
     if (!rows[0]) return res.status(404).json({ error: 'File not found' })
@@ -81,6 +87,15 @@ router.get('/:driveFileId/content', requireAuth, async (req: Request, res: Respo
     const { stream, mimeType } = await streamFile(req.params.driveFileId as string)
     res.setHeader('Content-Type', mimeType)
     res.setHeader('Cache-Control', 'private, max-age=86400')
+    // Never let the browser second-guess the type of a user-supplied file
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    if (req.query.download !== undefined) {
+      // RFC 5987 form so Japanese filenames survive the round trip
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename*=UTF-8''${encodeURIComponent(rows[0].file_name)}`
+      )
+    }
     stream.on('error', next)
     stream.pipe(res)
   } catch (err) {

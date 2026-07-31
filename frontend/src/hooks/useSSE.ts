@@ -1,11 +1,14 @@
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { refreshAfterListChange, type ListKind } from '../lib/managedLists'
 
 interface SSEEvent {
-  type: 'NEW_POST' | 'LIKE' | 'UNLIKE' | 'NEW_COMMENT' | 'DELETE_POST' | 'PIN_POST' | 'NOTIFICATION' | 'PING' | 'CONNECTED'
+  type: 'NEW_POST' | 'LIKE' | 'UNLIKE' | 'NEW_COMMENT' | 'DELETE_POST' | 'PIN_POST' | 'NOTIFICATION'
+      | 'MASTER_DATA' | 'PING' | 'CONNECTED'
   postId?: string
   count?: number
   isPinned?: boolean
+  kind?: ListKind
 }
 
 // Server pings every 25s (see backend sse.ts). If nothing has arrived in this
@@ -64,6 +67,7 @@ export function useSSE(): void {
   const fallbackRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const sseRef = useRef<EventSource | null>(null)
   const lastMessageRef = useRef<number>(Date.now())
+  const masterDataTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   useEffect(() => {
     const stopFallback = (): void => {
@@ -154,6 +158,19 @@ export function useSSE(): void {
             }
             break
 
+          // ── Master data (部署 / 拠点 / カテゴリ) ─────────────────────────────
+          // An admin changed a list. Everyone's pickers and filters refresh in
+          // place. Coalesced because a drag-reorder issues several PUTs in a
+          // row and each one announces.
+          case 'MASTER_DATA':
+            if (ev.kind) {
+              const kind = ev.kind
+              clearTimeout(masterDataTimer.current)
+              masterDataTimer.current = setTimeout(
+                () => refreshAfterListChange(queryClient, kind), 300)
+            }
+            break
+
           // ── Notification ────────────────────────────────────────────────────
           case 'NOTIFICATION':
             queryClient.invalidateQueries({ queryKey: ['notifications'] })
@@ -192,6 +209,7 @@ export function useSSE(): void {
 
     return () => {
       clearInterval(staleCheck)
+      clearTimeout(masterDataTimer.current)
       document.removeEventListener('visibilitychange', onVisible)
       sseRef.current?.close()
       stopFallback()

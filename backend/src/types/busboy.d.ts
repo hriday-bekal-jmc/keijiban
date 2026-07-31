@@ -25,6 +25,12 @@ declare module 'busboy' {
   interface BusboyEvents {
     file: (fieldname: string, stream: Readable, info: FileInfo) => void
     field: (name: string, val: string, info: { nameTruncated: boolean; valueTruncated: boolean; encoding: string; mimeType: string }) => void
+    /** Emitted when limits.files is exceeded; extra files are discarded */
+    filesLimit: () => void
+    /** Emitted when limits.fields is exceeded */
+    fieldsLimit: () => void
+    /** Emitted when limits.parts is exceeded */
+    partsLimit: () => void
     finish: () => void
     error: (err: unknown) => void
   }

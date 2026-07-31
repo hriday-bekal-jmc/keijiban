@@ -122,13 +122,10 @@ function PanelBody({ user, posts, initials, isLoading, rootBg, navigate }: Panel
                   <div className="text-[12px] text-brand-muted">まだ投稿がありません</div>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {posts.map((post, i) => (
-                    <motion.div
+                <div className="grid grid-cols-2 gap-2 kb-grid">
+                  {posts.map((post) => (
+                    <div
                       key={post.id}
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      transition={{ delay: Math.min(i * 0.04, 0.24), duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
                       onClick={() => navigate(`/posts/${post.id}`, { state: { background: rootBg } })}
                       className="cursor-pointer rounded-xl p-3 flex flex-col gap-1.5"
                       style={{ background: '#FAFAF5', border: '1px solid #E4D4B8' }}
@@ -154,7 +151,7 @@ function PanelBody({ user, posts, initials, isLoading, rootBg, navigate }: Panel
                           <MessageCircle size={9} strokeWidth={2} /> {post.comments_count}
                         </span>
                       </div>
-                    </motion.div>
+                    </div>
                   ))}
                 </div>
               )}
@@ -239,7 +236,7 @@ export default function UserProfilePanel({ standalone = false }: { standalone?: 
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      className="kb-sheet-layer fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
       style={{ background: 'rgba(58,42,26,0.5)', backdropFilter: 'blur(8px)' }}
       onClick={close}
     >
@@ -249,8 +246,8 @@ export default function UserProfilePanel({ standalone = false }: { standalone?: 
         exit={{ y: 60, opacity: 0, scale: 0.97 }}
         transition={{ type: 'spring', stiffness: 380, damping: 32 }}
         onClick={(e: React.MouseEvent) => e.stopPropagation()}
-        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col"
-        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', maxHeight: '88vh' }}
+        className="kb-sheet w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col"
+        style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
       >
         {/* Close bar */}
         <div className="flex items-center justify-between px-5 py-3.5 flex-shrink-0" style={{ borderBottom: '1px solid #F0E8D8' }}>

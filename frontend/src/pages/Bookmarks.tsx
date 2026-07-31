@@ -7,6 +7,7 @@ import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
 import { postTypeMeta } from '../lib/postMeta'
+import { swap, SPRING } from '../lib/motion'
 
 // ── shared types ─────────────────────────────────────────────────────────────
 
@@ -27,22 +28,32 @@ interface SavedPost {
 
 // ── compact post row ──────────────────────────────────────────────────────────
 
+/** Skeleton block that matches the row rhythm, so the swap doesn't jolt. */
+function RowSkeletons({ n = 3 }: { n?: number }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {Array.from({ length: n }, (_, i) => (
+        <div key={i} className="h-20 rounded-2xl animate-pulse" style={{ background: '#E4D4B8' }} />
+      ))}
+    </div>
+  )
+}
+
 interface PostRowProps {
   post: SavedPost
   action?: React.ReactNode
-  idx?: number
 }
 
-function PostRow({ post, action, idx = 0 }: PostRowProps) {
+// No initial/animate here on purpose: `variants` alone makes the row inherit
+// its parent list's state, so the stagger is driven by one timeline instead of
+// each row computing its own delay and drifting out of step.
+function PostRow({ post, action }: PostRowProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const tc = postTypeMeta(post.post_type)
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: Math.min(idx * 0.04, 0.3) }}
+    <div
       onClick={() => navigate(`/posts/${post.id}`, { state: { background: location } })}
       className="flex items-start gap-3 px-4 py-3.5 rounded-2xl cursor-pointer transition-all"
       style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
@@ -76,7 +87,7 @@ function PostRow({ post, action, idx = 0 }: PostRowProps) {
           {action}
         </div>
       )}
-    </motion.div>
+    </div>
   )
 }
 
@@ -114,31 +125,33 @@ function SavedTab() {
     onSuccess: () => toast.success('保存を解除しました'),
   })
 
-  if (isLoading) return (
-    <div className="flex flex-col gap-2">
-      {[0, 1, 2].map(i => (
-        <div key={i} className="h-20 rounded-2xl animate-pulse" style={{ background: '#E4D4B8' }} />
-      ))}
-    </div>
-  )
-
   const items = data?.bookmarks ?? []
-
-  if (items.length === 0) return (
-    <div className="text-center py-20">
-      <div className="text-5xl mb-4">🔖</div>
-      <div className="font-extrabold text-brand-dark text-base mb-2">保存した投稿がありません</div>
-      <div className="text-brand-muted text-[13px]">投稿の右下のブックマークアイコンで保存できます</div>
-    </div>
-  )
+  const state = isLoading ? 'loading' : items.length === 0 ? 'empty' : 'list'
 
   return (
-    <div className="flex flex-col gap-2">
-      {items.map((p, i) => (
+    <AnimatePresence mode="wait">
+      {state === 'loading' && (
+        <motion.div key="loading" variants={swap} initial="hidden" animate="show" exit="exit">
+          <RowSkeletons />
+        </motion.div>
+      )}
+
+      {state === 'empty' && (
+        <motion.div key="empty" variants={swap} initial="hidden" animate="show" exit="exit"
+          className="text-center py-20">
+          <div className="text-5xl mb-4">🔖</div>
+          <div className="font-extrabold text-brand-dark text-base mb-2">保存した投稿がありません</div>
+          <div className="text-brand-muted text-[13px]">投稿の右下のブックマークアイコンで保存できます</div>
+        </motion.div>
+      )}
+
+      {state === 'list' && (
+    <motion.div key="list" variants={swap} initial="hidden" animate="show" exit="exit"
+      className="flex flex-col gap-2 kb-list">
+      {items.map(p => (
         <PostRow
           key={p.id}
           post={p}
-          idx={i}
           action={
             <button
               onClick={() => remove.mutate(p.id)}
@@ -152,7 +165,9 @@ function SavedTab() {
           }
         />
       ))}
-    </div>
+    </motion.div>
+      )}
+    </AnimatePresence>
   )
 }
 
@@ -167,37 +182,21 @@ function EventsTab() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  if (isLoading) return (
-    <div className="flex flex-col gap-2">
-      {[0, 1, 2].map(i => (
-        <div key={i} className="h-20 rounded-2xl animate-pulse" style={{ background: '#E4D4B8' }} />
-      ))}
-    </div>
-  )
-
   const events = data?.events ?? []
   const now = new Date()
   const upcoming = events.filter(e => e.event_date && new Date(e.event_date) >= now)
   const past     = events.filter(e => e.event_date && new Date(e.event_date) < now)
+  const state = isLoading ? 'loading' : events.length === 0 ? 'empty' : 'list'
 
-  if (events.length === 0) return (
-    <div className="text-center py-20">
-      <div className="text-5xl mb-4">📅</div>
-      <div className="font-extrabold text-brand-dark text-base mb-2">イベントがありません</div>
-      <div className="text-brand-muted text-[13px]">投稿作成時にイベント日時を設定するとここに表示されます</div>
-    </div>
-  )
-
-  const EventItem = ({ e, i }: { e: SavedPost; i: number }) => {
+  // Entrance comes from the parent's `kb-list` class, same as PostRow — this
+  // tab used to slide in on a different axis from every other list.
+  const EventItem = ({ e }: { e: SavedPost }) => {
     const d = new Date(e.event_date!)
     const tc = postTypeMeta(e.post_type)
     const isToday = d.toDateString() === now.toDateString()
 
     return (
-      <motion.div
-        initial={{ opacity: 0, x: -8 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ delay: Math.min(i * 0.04, 0.3) }}
+      <div
         className="flex items-start gap-3 cursor-pointer"
         onClick={() => navigate(`/posts/${e.id}`, { state: { background: location } })}
       >
@@ -234,36 +233,56 @@ function EventsTab() {
           </div>
           <div className="text-[11px] text-brand-muted">{e.author_name} · {e.author_dept}</div>
         </div>
-      </motion.div>
+      </div>
     )
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      {upcoming.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-3 font-bold text-[12px] text-brand-muted uppercase tracking-wide">
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#22c55e' }} />
-            今後のイベント
-          </div>
-          <div className="flex flex-col gap-3">
-            {upcoming.map((e, i) => <EventItem key={e.id} e={e} i={i} />)}
-          </div>
-        </div>
+    <AnimatePresence mode="wait">
+      {state === 'loading' && (
+        <motion.div key="loading" variants={swap} initial="hidden" animate="show" exit="exit">
+          <RowSkeletons />
+        </motion.div>
       )}
 
-      {past.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-3 font-bold text-[12px] text-brand-muted uppercase tracking-wide">
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#B8A890' }} />
-            過去のイベント
-          </div>
-          <div className="flex flex-col gap-3 opacity-60">
-            {past.map((e, i) => <EventItem key={e.id} e={e} i={i} />)}
-          </div>
-        </div>
+      {state === 'empty' && (
+        <motion.div key="empty" variants={swap} initial="hidden" animate="show" exit="exit"
+          className="text-center py-20">
+          <div className="text-5xl mb-4">📅</div>
+          <div className="font-extrabold text-brand-dark text-base mb-2">イベントがありません</div>
+          <div className="text-brand-muted text-[13px]">投稿作成時にイベント日時を設定するとここに表示されます</div>
+        </motion.div>
       )}
-    </div>
+
+      {state === 'list' && (
+        <motion.div key="list" variants={swap} initial="hidden" animate="show" exit="exit"
+          className="flex flex-col gap-6">
+          {upcoming.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-3 font-bold text-[12px] text-brand-muted uppercase tracking-wide">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#22c55e' }} />
+                今後のイベント
+              </div>
+              <div className="flex flex-col gap-3 kb-list">
+                {upcoming.map(e => <EventItem key={e.id} e={e} />)}
+              </div>
+            </div>
+          )}
+
+          {past.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-3 font-bold text-[12px] text-brand-muted uppercase tracking-wide">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#B8A890' }} />
+                過去のイベント
+              </div>
+              <div className="flex flex-col gap-3 opacity-60 kb-list">
+                {past.map(e => <EventItem key={e.id} e={e} />)}
+              </div>
+            </div>
+          )}
+        </motion.div>
+      )}
+    </AnimatePresence>
   )
 }
 
@@ -304,33 +323,35 @@ function PinnedTab() {
     onSuccess: () => toast.success('ピン留めを解除しました'),
   })
 
-  if (isLoading) return (
-    <div className="flex flex-col gap-2">
-      {[0, 1].map(i => (
-        <div key={i} className="h-20 rounded-2xl animate-pulse" style={{ background: '#E4D4B8' }} />
-      ))}
-    </div>
-  )
-
   const items = data?.posts ?? []
-
-  if (items.length === 0) return (
-    <div className="text-center py-20">
-      <div className="text-5xl mb-4">📌</div>
-      <div className="font-extrabold text-brand-dark text-base mb-2">ピン留めされた投稿がありません</div>
-      {isAdmin && (
-        <div className="text-brand-muted text-[13px]">フィードの投稿メニューからピン留めできます</div>
-      )}
-    </div>
-  )
+  const state = isLoading ? 'loading' : items.length === 0 ? 'empty' : 'list'
 
   return (
-    <div className="flex flex-col gap-2">
-      {items.map((p, i) => (
+    <AnimatePresence mode="wait">
+      {state === 'loading' && (
+        <motion.div key="loading" variants={swap} initial="hidden" animate="show" exit="exit">
+          <RowSkeletons n={2} />
+        </motion.div>
+      )}
+
+      {state === 'empty' && (
+        <motion.div key="empty" variants={swap} initial="hidden" animate="show" exit="exit"
+          className="text-center py-20">
+          <div className="text-5xl mb-4">📌</div>
+          <div className="font-extrabold text-brand-dark text-base mb-2">ピン留めされた投稿がありません</div>
+          {isAdmin && (
+            <div className="text-brand-muted text-[13px]">フィードの投稿メニューからピン留めできます</div>
+          )}
+        </motion.div>
+      )}
+
+      {state === 'list' && (
+    <motion.div key="list" variants={swap} initial="hidden" animate="show" exit="exit"
+      className="flex flex-col gap-2 kb-list">
+      {items.map(p => (
         <PostRow
           key={p.id}
           post={p}
-          idx={i}
           action={isAdmin ? (
             <button
               onClick={() => unpin.mutate(p.id)}
@@ -344,7 +365,9 @@ function PinnedTab() {
           ) : undefined}
         />
       ))}
-    </div>
+    </motion.div>
+      )}
+    </AnimatePresence>
   )
 }
 
@@ -389,7 +412,7 @@ export default function Bookmarks({ initialTab = 'saved' }: { initialTab?: TabId
                 key={id}
                 onClick={() => setTab(id)}
                 whileTap={{ scale: 0.93 }}
-                transition={{ type: 'spring', stiffness: 480, damping: 30, mass: 0.7 }}
+                transition={SPRING}
                 className="relative flex-1 flex items-center justify-center gap-1.5 py-2 rounded-[9px] text-[12px] font-bold"
                 style={{ color: active ? '#E8732A' : '#8A7A68' }}
               >
@@ -398,7 +421,7 @@ export default function Bookmarks({ initialTab = 'saved' }: { initialTab?: TabId
                     layoutId="bookmark-tab-pill"
                     className="absolute inset-0 rounded-[9px]"
                     style={{ background: '#FFFDF7', boxShadow: '0 1px 4px rgba(60,30,10,0.08)' }}
-                    transition={{ type: 'spring', stiffness: 480, damping: 30, mass: 0.7 }}
+                    transition={SPRING}
                   />
                 )}
                 <span className="relative z-10 flex items-center gap-1.5">
@@ -411,21 +434,16 @@ export default function Bookmarks({ initialTab = 'saved' }: { initialTab?: TabId
         </div>
       </div>
 
-      {/* Tab content */}
+      {/* Tab content — rendered directly, with no wrapper AnimatePresence.
+          Each tab already crossfades its own loading/empty/list states, so
+          wrapping them in a second mode="wait" made every switch pay two
+          sequential exits before anything appeared. That stacking is what
+          felt janky. Now switching unmounts the old tab at once and the new
+          tab's list staggers itself in. */}
       <div className="max-w-[600px] mx-auto">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={tab}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.14 }}
-          >
-            {tab === 'saved'  && <SavedTab />}
-            {tab === 'events' && <EventsTab />}
-            {tab === 'pinned' && <PinnedTab />}
-          </motion.div>
-        </AnimatePresence>
+        {tab === 'saved'  && <SavedTab />}
+        {tab === 'events' && <EventsTab />}
+        {tab === 'pinned' && <PinnedTab />}
       </div>
     </div>
   )

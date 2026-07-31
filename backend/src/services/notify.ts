@@ -240,6 +240,9 @@ async function sendGoogleChat(row: NotifRow): Promise<void> {
 
 // ── background worker ─────────────────────────────────────────────────────────
 
+/** Give up on a notification after this many delivery passes. */
+const MAX_ATTEMPTS = 5
+
 async function processUnsentNotifications(): Promise<void> {
   const { rows } = await query<NotifRow>(`
     SELECT n.id, n.type, n.post_id, n.user_id, n.emailed_at, n.chat_webhook_sent_at,
@@ -254,11 +257,20 @@ async function processUnsentNotifications(): Promise<void> {
     JOIN users u  ON u.id = n.user_id
     JOIN posts p  ON p.id = n.post_id AND p.deleted_at IS NULL
     LEFT JOIN users a ON a.id = n.actor_id
-    WHERE (n.emailed_at IS NULL AND u.email_notifications = TRUE)
-       OR (n.chat_webhook_sent_at IS NULL AND u.chat_webhook_url IS NOT NULL)
+    WHERE n.attempts < ${MAX_ATTEMPTS}
+      AND ((n.emailed_at IS NULL AND u.email_notifications = TRUE)
+        OR (n.chat_webhook_sent_at IS NULL AND u.chat_webhook_url IS NOT NULL))
     ORDER BY n.created_at ASC
     LIMIT 100
   `)
+
+  // Count the attempt up front. A permanently failing row (revoked Chat
+  // webhook, dead mailbox) would otherwise sit at the head of this window
+  // forever and eventually starve delivery for everyone.
+  if (rows.length > 0) {
+    await query('UPDATE notifications SET attempts = attempts + 1 WHERE id = ANY($1::uuid[])',
+      [rows.map(r => r.id)])
+  }
 
   for (const row of rows) {
     if (!row.emailed_at && wantsEmail(row)) {
@@ -287,11 +299,30 @@ async function processUnsentNotifications(): Promise<void> {
   }
 }
 
+/** Guards against overlapping passes. Sending 100 mails serially takes far
+ *  longer than the 30s tick, so without this a second pass re-reads the same
+ *  `emailed_at IS NULL` rows mid-flight and sends every message twice. */
+let running = false
+let timer: ReturnType<typeof setInterval> | null = null
+
 export function startNotificationWorker(): void {
   const emailReady = !!(env.gmailUser && env.gmailAppPassword)
   console.log(`[notify] worker started — email: ${emailReady ? 'enabled' : 'disabled (set GMAIL_USER + GMAIL_APP_PASSWORD)'}`)
-  processUnsentNotifications().catch(err => console.error('[notify] initial pass error:', err))
-  setInterval(() => {
-    processUnsentNotifications().catch(err => console.error('[notify] worker error:', err))
-  }, 30_000)
+
+  const tick = async (): Promise<void> => {
+    if (running) return
+    running = true
+    try { await processUnsentNotifications() }
+    catch (err) { console.error('[notify] worker error:', err) }
+    finally { running = false }
+  }
+
+  void tick()
+  timer = setInterval(() => void tick(), 30_000)
+  timer.unref()
+}
+
+/** Let shutdown stop the loop; an in-flight pass finishes on its own. */
+export function stopNotificationWorker(): void {
+  if (timer) { clearInterval(timer); timer = null }
 }

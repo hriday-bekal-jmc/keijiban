@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { api } from '../lib/api'
+import { api, ApiError } from '../lib/api'
 import { BookOpen } from 'lucide-react'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID
@@ -22,15 +22,26 @@ export default function Login() {
           setError(null)
           setLoading(true)
           try {
-            await api.post('/auth/google', { idToken: credential })
+            // Retry once on a transient failure: the API can be momentarily
+            // unreachable during a restart or rolling deploy, and the user
+            // should not have to click sign-in a second time. Rejections
+            // (401 bad token, 403 wrong domain, 429 rate limit) are final and
+            // are never retried — verifying the same id token again is safe.
+            try {
+              await api.post('/auth/google', { idToken: credential })
+            } catch (err) {
+              if (!(err instanceof ApiError) || !err.isTransient) throw err
+              await new Promise(r => setTimeout(r, 800))
+              await api.post('/auth/google', { idToken: credential })
+            }
             login()
           } catch (err) {
             console.error('Login failed:', err)
             // Server-provided messages (rate limit, domain restriction) are
-            // meaningful — show them. Transport-level failures (HTTP 5xx,
-            // network) get a friendly retry message instead of "HTTP 500".
-            const msg = typeof err === 'string' && !/^(HTTP \d|Internal server error|Failed to fetch|NetworkError)/i.test(err)
-              ? err
+            // meaningful — show them. Transport failures get a friendly retry
+            // message rather than a raw "HTTP 500".
+            const msg = err instanceof ApiError && !err.isTransient
+              ? err.message
               : 'サーバーに接続できませんでした。数秒後にもう一度お試しください。'
             setError(msg)
           } finally {
@@ -108,7 +119,99 @@ export default function Login() {
         <p className="text-[11.5px] text-brand-muted text-center">
           @jmc-ltd.co.jp アカウントでサインイン
         </p>
+
+        {/* ⚠️ TEST-ONLY LOGIN — remove this block and TestLogin below. See TEST_LOGIN.md.
+            import.meta.env.DEV is false in `npm run build`, so this is dead code
+            eliminated from the production bundle — it cannot ship by accident. */}
+        {import.meta.env.DEV && <TestLogin onDone={login} />}
       </div>
     </div>
   )
+}
+
+// ⚠️ TEST-ONLY LOGIN — everything below this line is removable in one delete.
+function TestLogin({ onDone }: { onDone: () => void }) {
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [users, setUsers] = useState<TestUser[]>([])
+
+  // The picker is a convenience — the email box works on its own if it fails.
+  useEffect(() => {
+    api.get('/test-login/users')
+      .then(d => setUsers((d as { users: TestUser[] }).users))
+      .catch(() => { /* backend gate is off; the email box still shows */ })
+  }, [])
+
+  const submit = async (value: string) => {
+    if (!value.trim()) return
+    setErr(null)
+    setBusy(true)
+    try {
+      await api.post('/test-login', { email: value.trim() })
+      onDone()
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'テストログインに失敗しました')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="w-full flex flex-col gap-2 pt-4" style={{ borderTop: '1px dashed #E4D4B8' }}>
+      <div className="text-[10.5px] font-bold uppercase tracking-wide text-center" style={{ color: '#C05A18' }}>
+        ⚠️ テストログイン（開発用）
+      </div>
+
+      <form className="flex gap-2" onSubmit={e => { e.preventDefault(); void submit(email) }}>
+        <input
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          placeholder="user@jmc-ltd.co.jp"
+          className="flex-1 min-w-0 px-3 py-2 rounded-xl text-[13px] text-brand-dark outline-none"
+          style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+        />
+        <button
+          type="submit"
+          disabled={busy || !email.trim()}
+          className="px-4 py-2 rounded-xl text-[13px] font-extrabold text-white disabled:opacity-40 flex-shrink-0"
+          style={{ background: '#3A2A1A' }}
+        >
+          {busy ? '…' : 'ログイン'}
+        </button>
+      </form>
+
+      {users.length > 0 && (
+        <select
+          value=""
+          onChange={e => { setEmail(e.target.value); void submit(e.target.value) }}
+          className="w-full px-3 py-2 rounded-xl text-[12px] text-brand-dark outline-none"
+          style={{ background: '#F4EDDA', border: '1.5px solid #E4D4B8' }}
+        >
+          <option value="">ユーザーを選んで即ログイン…</option>
+          {users.map(u => (
+            <option key={u.id} value={u.email}>
+              {u.full_name}（{u.role === 'admin' ? '管理者' : u.department_name}
+              {u.branch_name ? ` / ${u.branch_name}` : ' / 拠点なし'}
+              {u.can_post ? '' : ' / 投稿不可'}）
+            </option>
+          ))}
+        </select>
+      )}
+
+      {err && (
+        <div className="text-[11.5px] font-semibold text-center" style={{ color: '#C05A18' }}>{err}</div>
+      )}
+    </div>
+  )
+}
+
+interface TestUser {
+  id: string
+  email: string
+  full_name: string
+  role: 'member' | 'admin'
+  department_name: string
+  branch_name: string | null
+  can_post: boolean
 }

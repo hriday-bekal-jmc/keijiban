@@ -18,6 +18,12 @@ export const POST_TYPES: Record<string, PostTypeMeta> = {
 
 export const postTypeMeta = (type: string): PostTypeMeta => POST_TYPES[type] ?? POST_TYPES.CHAT
 
+/** Colour a category chip: its own colour, tinted for the background. */
+export function categoryChipStyle(color: string): { background: string; color: string } {
+  // 22 = ~13% alpha — light enough for dark text to stay readable on any hue
+  return { background: `${color}22`, color }
+}
+
 export const postTypeColor = (type: string): string => POST_TYPES[type]?.color ?? '#A8906E'
 
 export const initials = (name?: string | null): string =>

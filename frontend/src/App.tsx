@@ -1,6 +1,7 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
+import { pageFade } from './lib/motion'
 import { useAuth } from './contexts/AuthContext'
 import { useSSE } from './hooks/useSSE'
 import Login from './pages/Login'
@@ -42,8 +43,24 @@ const BLUR_STRIPS = [
   { mask: 'transparent 87.5%, black 100%',                               blur: '1.406rem' },
 ]
 
+// Each tab is a real path — refresh keeps your place, back/forward moves
+// between tabs, and any screen is linkable. The app itself never reloads;
+// only the address bar changes.
+const PATH_TO_TAB: Record<string, string> = {
+  '/':              'feed',
+  '/search':        'search',
+  '/notifications': 'notifications',
+  '/bookmarks':     'bookmarks',
+  '/profile':       'profile',
+  '/admin':         'admin',
+}
+
 function AppShell() {
-  const [searchQuery, setSearchQuery]               = useState<string>('')
+  // Seed search from the URL so /search?q=… links open pre-filled
+  const [searchQuery, setSearchQuery] = useState<string>(
+    () => new URLSearchParams(window.location.search).get('q') ?? ''
+  )
+  const [debouncedSearch, setDebouncedSearch]       = useState<string>(searchQuery)
   const [composerOpen, setComposerOpen]             = useState<boolean>(false)
   const [bookmarksInitialTab, setBookmarksInitialTab] = useState<'saved' | 'events' | 'pinned'>('saved')
   const { user } = useAuth()
@@ -51,15 +68,37 @@ function AppShell() {
   const navigate = useNavigate()
   useSSE()
 
-  // Tab is derived from the URL (?tab=), not local state. This is what makes
-  // browser back/forward and page refresh behave correctly between tabs, and
-  // what makes closing a post/user modal return to the exact tab it was
-  // opened from — the modal's `background` location carries the ?tab= with it.
-  const activeTab = new URLSearchParams(location.search).get('tab') ?? 'feed'
+  // Background location set by PostCard/Notifications when navigating to a post
+  // from within the app — keeps the feed mounted while modal overlays it.
+  // Tab derives from it while a modal is open, so the nav pill stays correct.
+  const background = (location.state as { background?: Location } | null)?.background
+  const baseLocation = background ?? location
+
+  // '' when the screen belongs to no tab — a post or profile opened by direct
+  // link, where there is no background location to derive one from. Falling
+  // back to 'feed' here used to drag the nav pill to ホーム on those screens,
+  // so opening a post from 通知 by link visibly moved the highlight. Navigation
+  // treats '' as "no tab active" and leaves the pill where it was.
+  const activeTab = PATH_TO_TAB[baseLocation.pathname] ?? ''
   const setActiveTab = (tab: string) => {
     if (tab === activeTab) return // avoid spamming history (e.g. onSearch fires per keystroke)
-    navigate(tab === 'feed' ? '/' : `/?tab=${tab}`)
+    navigate(tab === 'feed' ? '/' : `/${tab}`)
   }
+
+  // Back-compat: redirect old /?tab=xxx bookmarks to the path form
+  useEffect(() => {
+    const legacy = new URLSearchParams(location.search).get('tab')
+    if (legacy && location.pathname === '/') navigate(`/${legacy}`, { replace: true })
+  }, [location, navigate])
+
+  // Keep the settled search term in the URL (replace, not push — typing
+  // shouldn't pile up history entries). Makes searches shareable/refreshable.
+  useEffect(() => {
+    if (activeTab !== 'search') return
+    const q = debouncedSearch.trim()
+    navigate(q ? `/search?q=${encodeURIComponent(q)}` : '/search', { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch])
 
   // Reset scroll position when switching tabs. Without this, switching from a
   // long feed (scrolled 2000px) to a short page (admin, profile) leaves the
@@ -68,9 +107,13 @@ function AppShell() {
     window.scrollTo(0, 0)
   }, [activeTab])
 
-  // Background location set by PostCard/Notifications when navigating to a post
-  // from within the app — keeps the feed mounted while modal overlays it
-  const background = (location.state as { background?: Location } | null)?.background
+  // Debounce the feed search: the header input updates searchQuery per
+  // keystroke, but only the settled value reaches Feed's query key — typing
+  // 「お知らせ」 fires one request instead of one per character.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery), 300)
+    return () => clearTimeout(t)
+  }, [searchQuery])
 
   const { data: notifData } = useQuery<unknown, Error, number>({
     queryKey: ['notifications'],
@@ -83,7 +126,7 @@ function AppShell() {
     switch (activeTab) {
       case 'feed':
       case 'search':
-        return <Feed searchQuery={searchQuery} onCompose={() => setComposerOpen(true)} onEventsMore={() => { setBookmarksInitialTab('events'); setActiveTab('bookmarks') }} />
+        return <Feed searchQuery={debouncedSearch} onCompose={() => setComposerOpen(true)} onEventsMore={() => { setBookmarksInitialTab('events'); setActiveTab('bookmarks') }} />
       case 'notifications':
         return <Notifications />
       case 'profile':
@@ -93,33 +136,9 @@ function AppShell() {
       case 'bookmarks':
         return <Bookmarks initialTab={bookmarksInitialTab} />
       default:
-        return <Feed searchQuery={searchQuery} onCompose={() => setComposerOpen(true)} onEventsMore={() => { setBookmarksInitialTab('events'); setActiveTab('bookmarks') }} />
+        return <Feed searchQuery={debouncedSearch} onCompose={() => setComposerOpen(true)} onEventsMore={() => { setBookmarksInitialTab('events'); setActiveTab('bookmarks') }} />
     }
   }
-
-  // Shared page chrome (header + nav) around each route's content.
-  // `extra` renders inside the shell after Navigation (composer overlay).
-  const shell = (children: ReactNode, extra?: ReactNode) => (
-    <div className="min-h-[100dvh]" style={{ position: 'relative', zIndex: 2 }}>
-      <AppHeader
-        user={user}
-        searchQuery={searchQuery}
-        onSearch={q => { setSearchQuery(q); setActiveTab('search') }}
-        onSearchClear={() => { setSearchQuery(''); setActiveTab('feed') }}
-        onAdmin={() => setActiveTab('admin')}
-        onProfile={() => setActiveTab('profile')}
-      />
-      <main style={{ paddingBottom: 'calc(8rem + env(safe-area-inset-bottom, 0px))' }}>{children}</main>
-      <Navigation
-        activeTab={activeTab}
-        setActiveTab={tab => { if (tab === 'bookmarks') setBookmarksInitialTab('saved'); setActiveTab(tab); if (tab !== 'search') setSearchQuery('') }}
-        unreadCount={unreadCount}
-        onCompose={() => setComposerOpen(true)}
-        canPost={user?.can_post ?? true}
-      />
-      {extra}
-    </div>
-  )
 
   return (
     <>
@@ -147,33 +166,83 @@ function AppShell() {
         </Suspense>
       </div>
 
-      {/* Main shell — always rendered; when background exists the Routes below
-          receives the background location so the feed stays visible */}
-      <Routes location={background ?? location}>
-        <Route path="/posts/:id" element={shell(<Suspense fallback={null}><PostDetail /></Suspense>)} />
-        {/* Standalone user profile — accessed via direct URL (no background state).
-            In-app navigation uses the modal overlay in the {background} block below. */}
-        <Route path="/users/:id" element={shell(<UserProfilePanel standalone />)} />
-        <Route path="/" element={shell(
-          <AnimatePresence mode="popLayout">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, y: 8, scale: 0.995, pointerEvents: 'none' }}
-              animate={{ opacity: 1, y: 0, scale: 1, pointerEvents: 'auto' }}
-              exit={{ opacity: 0, scale: 0.995, pointerEvents: 'none' }}
-              transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-            >
-              {renderPage()}
-            </motion.div>
-          </AnimatePresence>,
-          composerOpen && user?.can_post && (
-            <Suspense fallback={null}>
-              <PostComposer onClose={() => setComposerOpen(false)} />
-            </Suspense>
-          )
-        )} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      {/* Header and Navigation live OUTSIDE <Routes> so they mount once for
+          the whole session. Previously they were rendered inside each Route's
+          element, so every navigation unmounted and remounted them — and a
+          remounted `layoutId` element has no previous position to morph from,
+          which is why the nav pill flew in from below instead of sliding. */}
+      <div className="min-h-[100dvh]" style={{ position: 'relative', zIndex: 2 }}>
+        <AppHeader
+          user={user}
+          searchQuery={searchQuery}
+          onSearch={q => { setSearchQuery(q); setActiveTab('search') }}
+          onSearchClear={() => { setSearchQuery(''); setActiveTab('feed') }}
+          onAdmin={() => setActiveTab('admin')}
+          onProfile={() => setActiveTab('profile')}
+        />
+
+        <main style={{ paddingBottom: 'calc(8rem + env(safe-area-inset-bottom, 0px))' }}>
+          <Routes location={baseLocation}>
+            <Route path="/posts/:id" element={<Suspense fallback={null}><PostDetail /></Suspense>} />
+            {/* Standalone user profile — direct URL, no background state. In-app
+                navigation uses the modal overlay in the {background} block below. */}
+            <Route path="/users/:id" element={<UserProfilePanel standalone />} />
+            {/* Keyed remount, no AnimatePresence: an exit animation on a full
+                page either waits (dead gap) or overlaps (height jump). Letting
+                the old page go and fading the new one up is faster and steadier
+                — the list stagger inside carries the sense of motion. */}
+            {Object.keys(PATH_TO_TAB).map(path => (
+              <Route key={path} path={path} element={
+                <motion.div key={activeTab} variants={pageFade} initial="hidden" animate="show">
+                  {renderPage()}
+                </motion.div>
+              } />
+            ))}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+
+        {/* iOS-style bottom blur — mobile only (hidden on sm+).
+            Must live inside this wrapper, not as a sibling of it: the wrapper
+            sets `position: relative; zIndex: 2`, which is a stacking context,
+            so the nav's z-50 is only comparable to elements inside it. As a
+            sibling the blur's z-40 beat the whole wrapper (40 > 2) and covered
+            the nav pill. In here the two z-indices compare directly, so the
+            blur still blurs the page content above it while staying behind
+            the nav. */}
+        <div
+          className="sm:hidden bottom-blur"
+          style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: '7rem', pointerEvents: 'none', zIndex: 40, isolation: 'isolate' }}
+        >
+          {BLUR_STRIPS.map((s, i) => (
+            <div
+              key={i}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                maskImage: `linear-gradient(to bottom, ${s.mask})`,
+                WebkitMaskImage: `linear-gradient(to bottom, ${s.mask})`,
+                backdropFilter: `blur(${s.blur})`,
+                WebkitBackdropFilter: `blur(${s.blur})`,
+              }}
+            />
+          ))}
+        </div>
+
+        <Navigation
+          activeTab={activeTab}
+          setActiveTab={tab => { if (tab === 'bookmarks') setBookmarksInitialTab('saved'); setActiveTab(tab); if (tab !== 'search') setSearchQuery('') }}
+          unreadCount={unreadCount}
+          onCompose={() => setComposerOpen(true)}
+          canPost={user?.can_post ?? true}
+        />
+
+        {composerOpen && user?.can_post && (
+          <Suspense fallback={null}>
+            <PostComposer onClose={() => setComposerOpen(false)} />
+          </Suspense>
+        )}
+      </div>
 
       {/* Modal overlays — only rendered when navigated from within the app */}
       {background && (
@@ -183,26 +252,6 @@ function AppShell() {
         </Routes>
       )}
 
-      {/* iOS-style bottom blur — mobile only (hidden on sm+).
-          zIndex 40 keeps it below the navigation pill (z-50). */}
-      <div
-        className="sm:hidden bottom-blur"
-        style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: '7rem', pointerEvents: 'none', zIndex: 40, isolation: 'isolate' }}
-      >
-        {BLUR_STRIPS.map((s, i) => (
-          <div
-            key={i}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              maskImage: `linear-gradient(to bottom, ${s.mask})`,
-              WebkitMaskImage: `linear-gradient(to bottom, ${s.mask})`,
-              backdropFilter: `blur(${s.blur})`,
-              WebkitBackdropFilter: `blur(${s.blur})`,
-            }}
-          />
-        ))}
-      </div>
     </>
   )
 }

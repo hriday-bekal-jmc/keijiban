@@ -35,7 +35,7 @@ export default function ViewersModal({ postId, totalViews, onClose }: ViewersMod
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center p-0 sm:p-4"
+        className="kb-sheet-layer fixed inset-0 z-[300] flex items-end sm:items-center justify-center p-0 sm:p-4"
         style={{ background: 'rgba(58,42,26,0.45)', backdropFilter: 'blur(4px)' }}
         onClick={onClose}
       >
@@ -45,8 +45,8 @@ export default function ViewersModal({ postId, totalViews, onClose }: ViewersMod
           exit={{ opacity: 0, y: 40 }}
           transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
           onClick={e => e.stopPropagation()}
-          className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl flex flex-col"
-          style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', maxHeight: 'calc(100dvh - 80px)' }}
+          className="kb-sheet w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl flex flex-col"
+          style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}
         >
           {/* Header */}
           <div className="flex-shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid #E4D4B8' }}>
@@ -77,15 +77,12 @@ export default function ViewersModal({ postId, totalViews, onClose }: ViewersMod
             ) : viewers.length === 0 ? (
               <div className="text-center py-10 text-brand-muted text-[13px]">まだ閲覧者はいません</div>
             ) : (
-              <div className="flex flex-col divide-y divide-[#F4EDDA]">
-                {viewers.map((v, i) => {
+              <div className="flex flex-col divide-y divide-[#F4EDDA] kb-list">
+                {viewers.map((v) => {
                   const ini = initials(v.full_name)
                   return (
-                    <motion.div
+                    <div
                       key={v.id}
-                      initial={{ opacity: 0, x: -6 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: Math.min(i * 0.025, 0.2) }}
                       className="flex items-center gap-3 px-5 py-3"
                     >
                       {v.avatar_url ? (
@@ -124,7 +121,7 @@ export default function ViewersModal({ postId, totalViews, onClose }: ViewersMod
                           </span>
                         )}
                       </div>
-                    </motion.div>
+                    </div>
                   )
                 })}
               </div>

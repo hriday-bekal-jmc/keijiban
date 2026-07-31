@@ -1,10 +1,13 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { api } from '../lib/api'
 import { NotificationSkeleton } from '../components/Skeletons'
 import { initials as initialsOf } from '../lib/postMeta'
 import type { Notification } from '../types'
+
+const PER_PAGE = 30
 
 const AVATAR_COLORS = ['#7A5C30', '#C05A18', '#1E5FA8', '#1A7A48', '#6B35A8']
 
@@ -30,10 +33,17 @@ export default function Notifications() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
+  const [filter, setFilter] = useState<'unread' | 'all'>('all')
 
-  const { data, isLoading } = useQuery<NotificationsResponse>({
-    queryKey: ['notifications'],
-    queryFn: () => api.get('/notifications'),
+  // Paginated list under the ['notifications', ...] prefix so existing
+  // invalidations (SSE NOTIFICATION events, mark-read) refresh it too.
+  // Older notifications stay reachable via もっと見る instead of being cut
+  // off at the backend's single-page cap.
+  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery<NotificationsResponse>({
+    queryKey: ['notifications', 'list'],
+    queryFn: ({ pageParam }) => api.get(`/notifications?limit=${PER_PAGE}&offset=${(pageParam as number) * PER_PAGE}`),
+    getNextPageParam: (last, pages) => last.notifications.length === PER_PAGE ? pages.length : undefined,
+    initialPageParam: 0,
     staleTime: 30_000,
   })
 
@@ -47,8 +57,9 @@ export default function Notifications() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
   })
 
-  const notifications: Notification[] = data?.notifications ?? []
-  const unread = notifications.filter((n: Notification) => !n.read_at)
+  const all: Notification[] = data?.pages.flatMap(p => p.notifications) ?? []
+  const unread = all.filter((n: Notification) => !n.read_at)
+  const notifications = filter === 'unread' ? unread : all
 
   const handleClick = (n: Notification) => {
     if (!n.read_at) markOne.mutate(n.id)
@@ -79,17 +90,34 @@ export default function Notifications() {
             </span>
           )}
         </div>
-        {unread.length > 0 && (
-          <button
-            onClick={() => markAll.mutate()}
-            className="text-[12px] font-bold px-3 py-1.5 rounded-full transition-colors"
-            style={{ color: '#E8732A' }}
-            onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => e.currentTarget.style.background = '#FDE8D0'}
-            onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => e.currentTarget.style.background = 'transparent'}
-          >
-            すべて既読
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {/* 未読 / すべて filter */}
+          <div className="flex gap-1 p-0.5 rounded-full" style={{ background: 'rgba(58,42,26,0.08)' }}>
+            {([['all', 'すべて'], ['unread', '未読']] as const).map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setFilter(id)}
+                className="px-3 py-1 rounded-full text-[11.5px] font-bold transition-colors"
+                style={filter === id
+                  ? { background: '#FFFDF7', color: '#E8732A', boxShadow: '0 1px 4px rgba(60,30,10,0.08)' }
+                  : { color: '#8A7A68' }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {unread.length > 0 && (
+            <button
+              onClick={() => markAll.mutate()}
+              className="text-[12px] font-bold px-3 py-1.5 rounded-full transition-colors"
+              style={{ color: '#E8732A' }}
+              onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => e.currentTarget.style.background = '#FDE8D0'}
+              onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => e.currentTarget.style.background = 'transparent'}
+            >
+              すべて既読
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="max-w-[560px] mx-auto">
@@ -101,13 +129,17 @@ export default function Notifications() {
 
         {!isLoading && notifications.length === 0 && (
           <div className="text-center py-20">
-            <div className="text-5xl mb-4">🔔</div>
-            <div className="font-extrabold text-brand-dark text-base mb-2">通知はありません</div>
-            <div className="text-brand-muted text-[13px]">新しい通知が届くとここに表示されます</div>
+            <div className="text-5xl mb-4">{filter === 'unread' ? '✅' : '🔔'}</div>
+            <div className="font-extrabold text-brand-dark text-base mb-2">
+              {filter === 'unread' ? '未読の通知はありません' : '通知はありません'}
+            </div>
+            <div className="text-brand-muted text-[13px]">
+              {filter === 'unread' ? 'すべて既読になっています' : '新しい通知が届くとここに表示されます'}
+            </div>
           </div>
         )}
 
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 kb-list">
           {notifications.map((n: Notification, i: number) => {
             const isUnread = !n.read_at
             const color = AVATAR_COLORS[i % AVATAR_COLORS.length]
@@ -116,11 +148,8 @@ export default function Notifications() {
             const icon = TYPE_ICON[n.type as NotificationType] ?? '🔔'
 
             return (
-              <motion.div
+              <div
                 key={n.id}
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: Math.min(i * 0.03, 0.25) }}
                 onClick={() => handleClick(n)}
                 className="flex items-start gap-3 px-4 py-3.5 rounded-2xl cursor-pointer transition-all"
                 style={{
@@ -169,10 +198,24 @@ export default function Notifications() {
                 {isUnread && (
                   <div className="w-2 h-2 rounded-full flex-shrink-0 mt-1.5" style={{ background: '#E8732A' }} />
                 )}
-              </motion.div>
+              </div>
             )
           })}
         </div>
+
+        {/* Load older notifications */}
+        {hasNextPage && (
+          <div className="flex justify-center mt-4">
+            <button
+              onClick={() => fetchNextPage()}
+              disabled={isFetchingNextPage}
+              className="px-5 py-2 rounded-full text-[12px] font-bold disabled:opacity-50 transition-opacity"
+              style={{ background: '#F0E8D8', color: '#7A5C30' }}
+            >
+              {isFetchingNextPage ? '読み込み中…' : 'もっと見る'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

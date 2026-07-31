@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express'
-import { query, pool, visibilitySQL, UUID_RE, VIBE_TODAY_SQL, logAudit } from '../config/db.js'
+import { query, pool, visibilitySQL, UUID_RE, VIBE_TODAY_SQL, logAudit, resolveVisiblePost } from '../config/db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { commentCreateLimiter } from '../middleware/rateLimits.js'
 import { sseManager } from '../services/sse.js'
@@ -11,6 +11,16 @@ const MAX_COMMENT_LENGTH = 2000
 
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // The POST handler below checks visibility but this one did not, so any
+    // authenticated user could read the comments on a DEPARTMENT-scoped post
+    // they cannot see just by knowing its id.
+    const postId = req.params.postId as string
+    if (!UUID_RE.test(postId)) return res.status(400).json({ error: 'Invalid post ID' })
+    const { id: userId, departmentId, branchId, role } = (req as RequestWithUser).user
+    if (!await resolveVisiblePost(postId, userId, departmentId, branchId, role === 'admin')) {
+      return res.status(404).json({ error: 'Post not found' })
+    }
+
     const { rows } = await query(
       `SELECT c.id, c.content, c.created_at, c.updated_at,
               u.id AS author_id, u.full_name AS author_name, u.avatar_url AS author_avatar,
@@ -19,8 +29,9 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
        FROM comments c
        JOIN users u ON u.id = c.author_id
        WHERE c.post_id = $1 AND c.deleted_at IS NULL
-       ORDER BY c.created_at ASC`,
-      [req.params.postId]
+       ORDER BY c.created_at ASC
+       LIMIT 500`,
+      [postId]
     )
     res.json({ comments: rows })
   } catch (err) {
@@ -37,7 +48,7 @@ router.post('/', requireAuth, commentCreateLimiter, async (req: Request, res: Re
     }
 
     const authReq = req as RequestWithUser
-    const { id: userId, departmentId } = authReq.user
+    const { id: userId, departmentId, branchId, role } = authReq.user
     const postId = req.params.postId as string
 
     if (!UUID_RE.test(postId)) return res.status(400).json({ error: 'Invalid post ID' })
@@ -50,8 +61,8 @@ router.post('/', requireAuth, commentCreateLimiter, async (req: Request, res: Re
 
       // Verify post exists and is visible to the commenter
       const { rows: postRows } = await client.query(
-        `SELECT author_id FROM posts p WHERE p.id = $1 AND p.deleted_at IS NULL AND ${visibilitySQL(2, 3)}`,
-        [postId, userId, departmentId]
+        `SELECT author_id FROM posts p WHERE p.id = $1 AND p.deleted_at IS NULL AND ${visibilitySQL(2, 3, 4, role === 'admin')}`,
+        [postId, userId, departmentId, branchId]
       )
       if (!postRows[0]) {
         await client.query('ROLLBACK')

@@ -37,13 +37,11 @@ function getDrive() {
   return google.drive({ version: 'v3', auth })
 }
 
-async function makePublic(drive: ReturnType<typeof getDrive>, fileId: string) {
-  await drive.permissions.create({
-    fileId,
-    requestBody: { role: 'reader', type: 'anyone' },
-    supportsAllDrives: true,
-  })
-}
+// Files are deliberately NOT shared publicly. Everything is served through
+// GET /api/uploads/:driveFileId/content, which authenticates the caller and
+// checks they can see the owning post before streaming bytes via the service
+// account. A public "anyone with the link" grant would let a leaked file id
+// bypass that check entirely — including for DEPARTMENT-scoped posts.
 
 export interface DriveUploadResult {
   driveFileId: string
@@ -94,7 +92,6 @@ export async function uploadFile(
   })
 
   const fileId = created.data.id!
-  await makePublic(drive, fileId)
 
   let thumbnailPath: string | null = null
 
@@ -114,9 +111,7 @@ export async function uploadFile(
       supportsAllDrives: !!env.driveSharedDriveId,
     })
 
-    const thumbId = thumbCreated.data.id!
-    await makePublic(drive, thumbId)
-    thumbnailPath = `/api/uploads/${thumbId}/content`
+    thumbnailPath = `/api/uploads/${thumbCreated.data.id!}/content`
   }
 
   return {
@@ -125,6 +120,71 @@ export async function uploadFile(
     thumbnailPath,
     finalMimeType: uploadMime,
   }
+}
+
+// ── Orphan sweep ──────────────────────────────────────────────────────────────
+
+/** Files younger than this are never touched: an upload that has reached Drive
+ *  but whose attachments row is still being written must not be collected. */
+const ORPHAN_MIN_AGE_MS = 24 * 60 * 60 * 1000
+/** Bounded so one pass can never runaway-delete or hammer the API. */
+const SWEEP_MAX_DELETES = 200
+
+export interface SweepResult { scanned: number; orphaned: number; deleted: number; dryRun: boolean }
+
+/**
+ * Deletes Drive files the database no longer references.
+ *
+ * Orphans come from partially-failed uploads and from hard-deleted posts
+ * (attachments cascade away, the Drive objects do not). Each attachment row
+ * points at two files — the full-size `drive_file_id` and the thumbnail id
+ * embedded in `thumbnail_path` — so both are collected as "referenced".
+ *
+ * Only ever runs inside the configured shared drive, only on files older than
+ * ORPHAN_MIN_AGE_MS, and only up to SWEEP_MAX_DELETES per pass.
+ */
+export async function sweepOrphanedDriveFiles(
+  referencedIds: Set<string>,
+  { dryRun = false }: { dryRun?: boolean } = {}
+): Promise<SweepResult> {
+  if (!env.googleServiceAccountKey) throw new Error('Drive not configured')
+  // Without a shared drive we cannot scope the listing, and enumerating the
+  // service account's whole Drive risks deleting something unrelated.
+  if (!env.driveSharedDriveId) throw new Error('DRIVE_SHARED_DRIVE_ID required for the orphan sweep')
+
+  const drive = getDrive()
+  const cutoff = new Date(Date.now() - ORPHAN_MIN_AGE_MS).toISOString()
+  const result: SweepResult = { scanned: 0, orphaned: 0, deleted: 0, dryRun }
+
+  let pageToken: string | undefined
+  do {
+    const list = await drive.files.list({
+      corpora: 'drive',
+      driveId: env.driveSharedDriveId,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      q: `'${env.driveSharedDriveId}' in parents and trashed = false and createdTime < '${cutoff}'`,
+      fields: 'nextPageToken, files(id, name, createdTime)',
+      pageSize: 200,
+      pageToken,
+    })
+
+    for (const f of list.data.files ?? []) {
+      result.scanned++
+      if (!f.id || referencedIds.has(f.id)) continue
+      result.orphaned++
+      if (dryRun || result.deleted >= SWEEP_MAX_DELETES) continue
+      try {
+        await drive.files.delete({ fileId: f.id, supportsAllDrives: true })
+        result.deleted++
+      } catch (err) {
+        console.error('[drive-sweep] delete failed', { fileId: f.id, message: (err as Error).message })
+      }
+    }
+    pageToken = list.data.nextPageToken ?? undefined
+  } while (pageToken && result.deleted < SWEEP_MAX_DELETES)
+
+  return result
 }
 
 export async function streamFile(driveFileId: string): Promise<{ stream: NodeJS.ReadableStream; mimeType: string }> {

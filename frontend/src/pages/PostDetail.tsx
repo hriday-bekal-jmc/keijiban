@@ -6,9 +6,10 @@ import { ChevronLeft, Heart, MessageCircle, Bookmark, Send, X, Trash2 } from 'lu
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { UserHoverCard } from '../components/UserHoverCard'
+import PostThumbnail from '../components/PostThumbnail'
 import { renderMarkdown } from '../lib/markdown'
-import { postTypeMeta, initials, formatRelative, patchPostCaches, useAddComment, useDeleteComment } from '../lib/postMeta'
-import type { Post, Comment } from '../types'
+import { categoryChipStyle, initials, formatRelative, patchPostCaches, useAddComment, useDeleteComment } from '../lib/postMeta'
+import { attachmentUrl, type Post, type Comment } from '../types'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -48,13 +49,24 @@ function Avatar({ name, avatarUrl, size = 36, colorIdx = 0, gradient = false }: 
   )
 }
 
-interface TypeBadgeProps { type: string }
-function TypeBadge({ type }: TypeBadgeProps) {
-  const { bg, color, label } = postTypeMeta(type)
+/** 0..N category chips. `max` keeps the header row from wrapping. */
+function CategoryBadges({ post, max }: { post: Post; max?: number }) {
+  const cats = post.categories ?? []
+  const shown = max ? cats.slice(0, max) : cats
   return (
-    <span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full flex-shrink-0" style={{ background: bg, color }}>
-      {label}
-    </span>
+    <>
+      {shown.map(c => (
+        <span key={c.id} className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full flex-shrink-0"
+          style={categoryChipStyle(c.color)}>
+          {c.name}
+        </span>
+      ))}
+      {max && cats.length > max && (
+        <span className="text-[10px] font-bold flex-shrink-0" style={{ color: '#A8906E' }}>
+          +{cats.length - max}
+        </span>
+      )}
+    </>
   )
 }
 
@@ -79,12 +91,7 @@ function PostSkeleton() {
 interface CommentItemProps { comment: Comment; idx: number; canDelete: boolean; onDelete: (id: string) => void }
 function CommentItem({ comment, idx, canDelete, onDelete }: CommentItemProps) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: Math.min(idx * 0.035, 0.22) }}
-      className="flex gap-3 items-start group"
-    >
+    <div className="flex gap-3 items-start group">
       <UserHoverCard userId={comment.author_id} userName={comment.author_name}>
         <div className="flex-shrink-0 mt-0.5">
           <Avatar name={comment.author_name} size={32} colorIdx={idx} />
@@ -109,7 +116,7 @@ function CommentItem({ comment, idx, canDelete, onDelete }: CommentItemProps) {
           <Trash2 size={13} strokeWidth={2} />
         </button>
       )}
-    </motion.div>
+    </div>
   )
 }
 
@@ -123,9 +130,6 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const commentsEndRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState('')
-  const [liked, setLiked] = useState<boolean | null>(null)
-  const [likesCount, setLikesCount] = useState<number | null>(null)
-  const [bookmarked, setBookmarked] = useState<boolean | null>(null)
   const [lightbox, setLightbox] = useState<number | null>(null)
 
   const { data: postData, isLoading: postLoading, isError } = useQuery<{ post: Post }>({
@@ -143,19 +147,32 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
   const post = postData?.post
   const comments = commentsData?.comments ?? []
 
-  useEffect(() => {
-    if (post && liked === null) {
-      setLiked(post.liked_by_me)
-      setLikesCount(Number(post.likes_count))
-      setBookmarked(post.is_bookmarked_by_me ?? false)
-    }
-  }, [post, liked])
+  // Derived from the cache, not mirrored into state. The previous version
+  // seeded three useState values in an effect guarded by `liked === null`, so
+  // it ran exactly once — after that, SSE like events and refetches updated
+  // the cache while this view kept showing its first snapshot.
+  const liked = post?.liked_by_me ?? false
+  const likesCount = Number(post?.likes_count ?? 0)
+  const bookmarked = post?.is_bookmarked_by_me ?? false
 
-  // Record view once when post loads (fire-and-forget; API ignores author's own views)
+  /** Patch this post's own cache entry as well as the list caches, so the
+   *  detail view updates instantly while the request is in flight. */
+  const patchThisPost = (patch: (p: Post) => Post) => {
+    queryClient.setQueryData(['post', id], (old: { post: Post } | undefined) =>
+      old ? { post: patch(old.post) } : old)
+    patchPostCaches(queryClient, id, p => patch(p as unknown as Post) as unknown as Record<string, unknown>)
+  }
+
+  // Record the view once the post loads (fire-and-forget; the API skips the
+  // author's own views). This is also what marks the post read when it's
+  // opened from a notification or a direct link — paths the feed's dwell
+  // tracking never sees. Patch the cached copies so the unread ring clears
+  // immediately instead of waiting for the next feed refetch.
   useEffect(() => {
     if (!id) return
-    api.post(`/posts/${id}/view`, {}).catch(() => {})
-  }, [id])
+    api.post('/posts/views', { ids: [id] }).catch(() => {})
+    patchPostCaches(queryClient, id, p => (p.viewed_by_me ? p : { ...p, viewed_by_me: true }))
+  }, [id, queryClient])
 
   // Escape closes modal (or lightbox if open)
   useEffect(() => {
@@ -183,19 +200,21 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
     mutationFn: (isLiked: boolean) => isLiked
       ? api.post(`/posts/${id}/like`)
       : api.delete(`/posts/${id}/like`),
+    // Patches this post plus the feed/profile caches, so the detail view and
+    // any PostCard behind it move together.
     onMutate: (isLiked) => {
-      setLiked(isLiked)
-      setLikesCount(c => isLiked ? (c ?? 0) + 1 : (c ?? 0) - 1)
-      // Mirror into feed + profile caches so PostCard views stay in sync
-      patchPostCaches(queryClient, id, p => ({
+      patchThisPost(p => ({
         ...p,
         liked_by_me: isLiked,
         likes_count: isLiked ? Number(p.likes_count) + 1 : Number(p.likes_count) - 1,
       }))
     },
     onError: (_err, isLiked) => {
-      setLiked(!isLiked)
-      setLikesCount(c => isLiked ? (c ?? 0) - 1 : (c ?? 0) + 1)
+      patchThisPost(p => ({
+        ...p,
+        liked_by_me: !isLiked,
+        likes_count: isLiked ? Number(p.likes_count) - 1 : Number(p.likes_count) + 1,
+      }))
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['posts'] })
@@ -209,8 +228,8 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
     mutationFn: (save: boolean) => save
       ? api.post(`/bookmarks/${id}`)
       : api.delete(`/bookmarks/${id}`),
-    onMutate: (save) => setBookmarked(save),
-    onError: (_err, save) => setBookmarked(!save),
+    onMutate: (save) => patchThisPost(p => ({ ...p, is_bookmarked_by_me: save })),
+    onError: (_err, save) => patchThisPost(p => ({ ...p, is_bookmarked_by_me: !save })),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['bookmarks'] })
       queryClient.invalidateQueries({ queryKey: ['posts'] })
@@ -272,7 +291,7 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
       <div className="text-[12px] text-brand-muted font-semibold">最初のコメントを投稿しよう</div>
     </div>
   ) : (
-    <div className="flex flex-col">
+    <div className="flex flex-col kb-list">
       {comments.map((c, i) => (
         <CommentItem
           key={c.id} comment={c} idx={i}
@@ -309,7 +328,7 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
             </div>
           )}
         </div>
-        {post && <TypeBadge type={post.post_type} />}
+        {post && <CategoryBadges post={post} max={1} />}
       </div>
 
       {/* ── Body: mobile = single scroll column, sm+ = two columns ── */}
@@ -331,6 +350,21 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
             {post && (
               <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
 
+                {/* Designed cover band — decorative; the <h1> below is the
+                    real heading, so the title is not repeated here */}
+                {post.thumb_background && (
+                  <PostThumbnail
+                    title={post.title}
+                    showTitle={false}
+                    emoji={post.thumbnail_emoji}
+                    background={post.thumb_background}
+                    textColor={post.thumb_text_color}
+                    pattern={post.thumb_pattern}
+                    height={110}
+                    style={{ borderRadius: 16, marginBottom: 20 }}
+                  />
+                )}
+
                 {/* Author row */}
                 <div className="flex items-center gap-3 mb-5">
                   <UserHoverCard userId={post.author_id} userName={post.author_name}>
@@ -342,7 +376,7 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
                       {post.author_dept} · {post.visibility_scope === 'COMPANY_WIDE' ? '全社' : '部署内'} · {formatDate(post.created_at)}
                     </div>
                   </div>
-                  <TypeBadge type={post.post_type} />
+                  <CategoryBadges post={post} />
                 </div>
 
                 {/* Pinned banner */}
@@ -428,7 +462,7 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
                       {files.map((a: any) => (
                         <a
                           key={a.id}
-                          href={a.drive_url}
+                          href={attachmentUrl(a, true)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-[13px] font-semibold text-brand-dark transition-colors mb-1.5"
@@ -460,8 +494,8 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
                               <X size={16} strokeWidth={2.5} />
                             </button>
                             <img src={imgs2[lightbox].thumbnail_path} alt={imgs2[lightbox].file_name} className="rounded-xl object-contain" style={{ maxWidth: '90vw', maxHeight: '88vh' }} onClick={e => e.stopPropagation()} />
-                            <a href={imgs2[lightbox].drive_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="absolute bottom-4 text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: 'rgba(255,255,255,0.15)', color: 'rgba(255,255,255,0.75)' }}>
-                              {lightbox + 1} / {imgs2.length} · Google Drive で開く →
+                            <a href={attachmentUrl(imgs2[lightbox], true)} onClick={e => e.stopPropagation()} className="absolute bottom-4 text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: 'rgba(255,255,255,0.15)', color: 'rgba(255,255,255,0.75)' }}>
+                              {lightbox + 1} / {imgs2.length} · 元の画像をダウンロード ↓
                             </a>
                           </div>
                         )
@@ -489,7 +523,7 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
                     style={{ background: liked ? '#FDE8D0' : 'transparent', color: liked ? '#E8732A' : '#A8906E' }}
                   >
                     <Heart size={16} strokeWidth={2} fill={liked ? '#E8732A' : 'none'} color={liked ? '#E8732A' : '#A8906E'} />
-                    {likesCount ?? 0} いいね
+                    {likesCount} いいね
                   </button>
                   <button
                     onClick={() => inputRef.current?.focus()}
@@ -566,14 +600,14 @@ function PostDetailContent({ id, asModal, onClose }: ContentProps) {
                 <div className="text-[11px] mt-1" style={{ color: '#C8B898' }}>最初のコメントを投稿しよう</div>
               </div>
             ) : (
-              <div className="px-5 pt-4">
+              <div className="px-5 pt-4 kb-list">
                 {comments.map((c, i) => (
-        <CommentItem
-          key={c.id} comment={c} idx={i}
-          canDelete={canDeleteComment(c)}
-          onDelete={cid => deleteComment.mutate(cid)}
-        />
-      ))}
+                  <CommentItem
+                    key={c.id} comment={c} idx={i}
+                    canDelete={canDeleteComment(c)}
+                    onDelete={cid => deleteComment.mutate(cid)}
+                  />
+                ))}
                 <div ref={commentsEndRef} className="pb-4" />
               </div>
             )}

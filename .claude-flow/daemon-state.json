@@ -1,76 +1,76 @@
 {
   "running": true,
-  "startedAt": "2026-07-07T02:01:45.796Z",
+  "startedAt": "2026-07-28T01:20:44.238Z",
   "workers": {
     "map": {
-      "runCount": 21,
-      "successCount": 21,
+      "runCount": 52,
+      "successCount": 52,
       "failureCount": 0,
-      "averageDurationMs": 3.9523809523809517,
-      "isRunning": false,
-      "nextRun": "2026-07-07T08:31:42.146Z",
-      "lastStartedAt": "2026-07-07T08:16:42.141Z",
-      "lastRun": "2026-07-07T08:16:42.144Z"
+      "averageDurationMs": 6.269230769230769,
+      "lastRun": "2026-07-28T08:18:30.372Z",
+      "lastStartedAt": "2026-07-28T08:18:30.361Z",
+      "nextRun": "2026-07-28T08:33:30.375Z",
+      "isRunning": false
     },
     "audit": {
-      "runCount": 31,
-      "successCount": 31,
+      "runCount": 76,
+      "successCount": 76,
       "failureCount": 0,
-      "averageDurationMs": 46.29032258064516,
-      "isRunning": false,
-      "nextRun": "2026-07-07T08:21:43.415Z",
-      "lastStartedAt": "2026-07-07T08:21:43.418Z",
-      "lastRun": "2026-07-07T08:21:43.457Z"
+      "averageDurationMs": 25.69736842105263,
+      "lastRun": "2026-07-28T08:23:30.396Z",
+      "lastStartedAt": "2026-07-28T08:23:30.386Z",
+      "nextRun": "2026-07-28T08:33:30.400Z",
+      "isRunning": false
     },
     "optimize": {
-      "runCount": 20,
-      "successCount": 20,
+      "runCount": 50,
+      "successCount": 50,
       "failureCount": 0,
-      "averageDurationMs": 15.3,
-      "isRunning": false,
-      "nextRun": "2026-07-07T08:31:42.141Z",
-      "lastStartedAt": "2026-07-07T08:16:42.130Z",
-      "lastRun": "2026-07-07T08:16:42.139Z"
+      "averageDurationMs": 16.42,
+      "lastRun": "2026-07-28T08:18:30.767Z",
+      "lastStartedAt": "2026-07-28T08:18:30.762Z",
+      "nextRun": "2026-07-28T08:33:30.771Z",
+      "isRunning": false
     },
     "consolidate": {
-      "runCount": 10,
-      "successCount": 10,
+      "runCount": 26,
+      "successCount": 26,
       "failureCount": 0,
-      "averageDurationMs": 6.4,
-      "isRunning": false,
-      "nextRun": "2026-07-07T08:31:41.999Z",
-      "lastStartedAt": "2026-07-07T08:01:41.993Z",
-      "lastRun": "2026-07-07T08:01:41.997Z"
+      "averageDurationMs": 7.423076923076923,
+      "lastRun": "2026-07-28T08:03:30.875Z",
+      "lastStartedAt": "2026-07-28T08:03:30.868Z",
+      "nextRun": "2026-07-28T08:33:30.879Z",
+      "isRunning": false
     },
     "testgaps": {
-      "runCount": 16,
-      "successCount": 16,
+      "runCount": 40,
+      "successCount": 40,
       "failureCount": 0,
-      "averageDurationMs": 9.625,
-      "isRunning": false,
-      "nextRun": "2026-07-07T08:41:42.547Z",
-      "lastStartedAt": "2026-07-07T08:21:42.534Z",
-      "lastRun": "2026-07-07T08:21:42.545Z"
+      "averageDurationMs": 9.575,
+      "lastRun": "2026-07-28T08:23:30.810Z",
+      "lastStartedAt": "2026-07-28T08:23:30.803Z",
+      "nextRun": "2026-07-28T08:23:30.788Z",
+      "isRunning": false
     },
     "backup": {
-      "runCount": 1,
-      "successCount": 1,
+      "runCount": 4,
+      "successCount": 4,
       "failureCount": 0,
-      "averageDurationMs": 6,
-      "isRunning": false,
-      "nextRun": "2026-07-08T02:11:45.823Z",
-      "lastStartedAt": "2026-07-07T02:11:45.814Z",
-      "lastRun": "2026-07-07T02:11:45.820Z"
+      "averageDurationMs": 10.25,
+      "lastRun": "2026-07-28T07:01:37.687Z",
+      "lastStartedAt": "2026-07-28T07:01:37.668Z",
+      "nextRun": "2026-07-29T07:01:37.691Z",
+      "isRunning": false
     },
     "harness": {
-      "runCount": 2,
-      "successCount": 2,
+      "runCount": 6,
+      "successCount": 6,
       "failureCount": 0,
-      "averageDurationMs": 24,
-      "isRunning": false,
-      "nextRun": "2026-07-07T14:13:45.855Z",
-      "lastStartedAt": "2026-07-07T08:13:45.843Z",
-      "lastRun": "2026-07-07T08:13:45.852Z"
+      "averageDurationMs": 21.666666666666668,
+      "lastRun": "2026-07-28T07:32:44.300Z",
+      "lastStartedAt": "2026-07-28T07:32:44.284Z",
+      "nextRun": "2026-07-28T13:32:44.304Z",
+      "isRunning": false
     },
     "predict": {
       "runCount": 0,
@@ -89,8 +89,8 @@
   },
   "config": {
     "autoStart": false,
-    "logDir": "C:\\Users\\h-bekal\\Videos\\keijiban\\.claude-flow\\logs",
-    "stateFile": "C:\\Users\\h-bekal\\Videos\\keijiban\\.claude-flow\\daemon-state.json",
+    "logDir": "c:\\Users\\h-bekal\\Videos\\keijiban\\.claude-flow\\logs",
+    "stateFile": "c:\\Users\\h-bekal\\Videos\\keijiban\\.claude-flow\\daemon-state.json",
     "maxConcurrent": 2,
     "workerTimeoutMs": 960000,
     "resourceThresholds": {
@@ -99,6 +99,7 @@
     },
     "ttlMs": 43200000,
     "idleShutdownMs": 0,
+    "aiWorkersEnabled": false,
     "workers": [
       {
         "type": "map",
@@ -174,5 +175,5 @@
       }
     ]
   },
-  "savedAt": "2026-07-07T08:21:43.457Z"
+  "savedAt": "2026-07-28T08:23:30.810Z"
 }

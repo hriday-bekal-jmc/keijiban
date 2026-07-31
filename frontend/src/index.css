@@ -7,6 +7,24 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+:root {
+  /* Space the floating bottom nav occupies (see Navigation.tsx): its offset
+     from the bottom, its own height, a gap, and the device's safe area.
+     Every bottom-anchored sheet clears it through the two classes below —
+     they each used to carry their own magic number, so some overlapped it. */
+  --kb-nav-clear: calc(1.75rem + 3.375rem + 0.75rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* The full-screen backdrop of a sheet/modal: keeps its contents above the nav.
+   The doubled class is deliberate. These layers also carry a Tailwind padding
+   shorthand (`sm:p-4`), which is emitted after this rule and at equal
+   specificity, so it would reset padding-bottom and drop the panel back under
+   the nav. Two classes outrank it whatever the source order. */
+.kb-sheet-layer.kb-sheet-layer { padding-bottom: var(--kb-nav-clear); }
+
+/* The panel itself: never taller than the space left above the nav. */
+.kb-sheet { max-height: calc(100dvh - var(--kb-nav-clear) - 1rem); }
+
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #D4C3A0; border-radius: 4px; }
@@ -45,6 +63,46 @@ button, a, [role="button"] {
 }
 
 ::selection { background: #FDE8D0; color: #C05A18; }
+
+/* ── List entrance animation ───────────────────────────────────────────────────
+   CSS rather than framer variants on purpose. framer's `staggerChildren` is
+   orchestrated at the moment the CONTAINER animates, so children that mount
+   afterwards — which is every list whose data arrives after first paint — can
+   be left sitting at opacity 0 with nothing to advance them. That renders as a
+   page with its background but no content. A CSS animation is attached per
+   element and always runs to completion, so content can never get stuck
+   hidden, and it runs on the compositor instead of re-rendering React. */
+@keyframes kb-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes kb-pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+.kb-list > *, .kb-grid > * {
+  animation-duration: 0.26s;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  /* `both` holds the from-state before the delay and the to-state after —
+     without it a delayed item flashes at full opacity first. */
+  animation-fill-mode: both;
+}
+.kb-list > * { animation-name: kb-rise; }
+.kb-grid > * { animation-name: kb-pop; }
+
+/* Stagger only the first few; everything after shares the last delay so a long
+   list never leaves the reader waiting. */
+.kb-list > *:nth-child(2),   .kb-grid > *:nth-child(2)   { animation-delay: 40ms; }
+.kb-list > *:nth-child(3),   .kb-grid > *:nth-child(3)   { animation-delay: 80ms; }
+.kb-list > *:nth-child(4),   .kb-grid > *:nth-child(4)   { animation-delay: 120ms; }
+.kb-list > *:nth-child(5),   .kb-grid > *:nth-child(5)   { animation-delay: 160ms; }
+.kb-list > *:nth-child(6),   .kb-grid > *:nth-child(6)   { animation-delay: 200ms; }
+.kb-list > *:nth-child(n+7), .kb-grid > *:nth-child(n+7) { animation-delay: 240ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kb-list > *, .kb-grid > * { animation: none; }
+}
 
 /* ── Rendered markdown (renderMarkdown output) ─────────────────────────────────
    Values copied verbatim from the previous inline styles — visuals unchanged. */

@@ -66,9 +66,11 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
 
   try {
-    (req as RequestWithUser).user = jwt.verify(token, env.jwtSecret, {
-      algorithms: ['HS256'],
-    }) as AuthUser
+    const claims = jwt.verify(token, env.jwtSecret, { algorithms: ['HS256'] }) as AuthUser
+    // Tokens issued before branches existed carry no branchId. Default to null
+    // (全社 posts only) rather than undefined, which would break SQL binding.
+    claims.branchId = claims.branchId ?? null
+    ;(req as RequestWithUser).user = claims
     next()
   } catch {
     // Do NOT clear the refresh_token cookie here — client will use it to refresh.

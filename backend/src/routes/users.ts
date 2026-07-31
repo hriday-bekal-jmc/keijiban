@@ -116,7 +116,7 @@ router.delete('/me/vibe', requireAuth, async (req: Request, res: Response, next:
 router.put('/me/avatar', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id: userId } = (req as RequestWithUser).user
-    const { files } = await parseMultipart(req, 4 * 1024 * 1024)
+    const { files } = await parseMultipart(req, { maxFileSize: 4 * 1024 * 1024, maxFiles: 1 })
     const file = files[0]
     if (!file) return res.status(400).json({ error: 'No file provided' })
     if (!file.mimetype.startsWith('image/')) return res.status(400).json({ error: 'Image files only' })

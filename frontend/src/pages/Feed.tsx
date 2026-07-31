@@ -2,15 +2,17 @@ import { useState, useEffect, useRef } from 'react'
 import { useInfiniteQuery, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
-import { Calendar, Pin } from 'lucide-react'
+import { Calendar, Pin, ChevronDown } from 'lucide-react'
 import { api } from '../lib/api'
 import PostCard from '../components/PostCard'
 import { PostCardSkeleton } from '../components/Skeletons'
 import { useAuth } from '../contexts/AuthContext'
 import { useReadPosts } from '../hooks/useReadPosts'
 import { postTypeColor, initials as initialsOf } from '../lib/postMeta'
+import { pageFade } from '../lib/motion'
+import { useActiveList } from '../lib/managedLists'
 import type { User } from '../contexts/AuthContext'
-import type { Post } from '../types'
+import type { Post, Branch, Category } from '../types'
 
 // ── Monthly events types + helpers ──────────────────────────────────────────
 
@@ -149,27 +151,60 @@ function useMonthlyEvents() {
   return { events, loaded: data !== undefined }
 }
 
-// ── Filter chips ────────────────────────────────────────────────────────────
-const FILTER_OPTIONS = [
-  { id: 'all',          label: 'すべて' },
-  { id: 'ANNOUNCEMENT', label: '📢 お知らせ' },
-  { id: 'KNOWLEDGE',    label: '📚 ナレッジ' },
-  { id: 'DAILY_REPORT', label: '📊 日報' },
-  { id: 'CHAT',         label: '💬 雑談' },
-  { id: 'DEPARTMENT',   label: '🏢 部署' },
-]
+// ── Branch selector + category chips ─────────────────────────────────────────
+
+const FILTER_SPRING = { type: 'spring', stiffness: 480, damping: 30, mass: 0.7 } as const
+
+/** 全社 = no branch filter. Branch narrows what you're looking at; it can never
+ *  widen it, because the server's visibility clause still applies. */
+/**
+ * 全社 plus the branches the viewer can actually read. A member belongs to one
+ * branch and only ever sees that branch's posts, so offering the others would
+ * just produce empty results. Admins moderate every site, so they get all.
+ *
+ * Presentation only — the API applies the same rule (see visibilitySQL), so a
+ * hand-crafted ?branch= for someone else's branch still returns nothing.
+ */
+function BranchSelect({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  const { user } = useAuth()
+  const all = useActiveList<Branch>('branches')
+  const branches = user?.role === 'admin' ? all : all.filter(b => b.id === user?.branch_id)
+
+  // An unassigned member sees only 全社, so the control has nothing to choose.
+  if (branches.length === 0) return null
+
+  return (
+    <div className="relative flex-shrink-0">
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="appearance-none font-extrabold text-[14px] pl-4 pr-9 py-2 rounded-full cursor-pointer outline-none"
+        style={{ background: '#FFFDF7', border: '2px solid #E8732A', color: '#C05A18' }}
+      >
+        <option value="">全社</option>
+        {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+      </select>
+      <ChevronDown size={14} strokeWidth={3} color="#E8732A"
+        className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+    </div>
+  )
+}
 
 interface FilterChipsProps {
   active: string
   onChange: (id: string) => void
 }
 
-const FILTER_SPRING = { type: 'spring', stiffness: 480, damping: 30, mass: 0.7 } as const
-
+/** Categories come from the DB so admins can add/rename them without a deploy. */
 function FilterChips({ active, onChange }: FilterChipsProps) {
+  const options = [
+    { id: 'all', label: 'すべてのカテゴリ', color: '#E8732A' },
+    ...useActiveList<Category>('categories').map(c => ({ id: c.id, label: c.name, color: c.color })),
+  ]
+
   return (
-    <div className="scroll-touch flex gap-1.5 overflow-x-auto pb-1 mb-3.5" style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}>
-      {FILTER_OPTIONS.map(({ id, label }) => {
+    <div className="flex flex-wrap gap-1.5 pb-1 mb-3.5">
+      {options.map(({ id, label, color }) => {
         const isActive = active === id
         return (
           <motion.button
@@ -180,7 +215,7 @@ function FilterChips({ active, onChange }: FilterChipsProps) {
             className="relative whitespace-nowrap px-3.5 py-1.5 rounded-full text-[12px] font-bold flex-shrink-0"
             style={{
               color:  isActive ? '#FFFFFF' : '#6B5236',
-              border: `1.5px solid ${isActive ? '#E8732A' : '#E4D4B8'}`,
+              border: `1.5px solid ${isActive ? color : '#E4D4B8'}`,
               background: isActive ? 'transparent' : '#FFFDF7',
             }}
           >
@@ -188,7 +223,7 @@ function FilterChips({ active, onChange }: FilterChipsProps) {
               <motion.span
                 layoutId="filter-pill"
                 className="absolute inset-0 rounded-full"
-                style={{ background: '#E8732A' }}
+                style={{ background: color }}
                 transition={FILTER_SPRING}
               />
             )}
@@ -205,11 +240,11 @@ const STORY_COLORS = ['#7A5C30', '#C05A18', '#1E5FA8', '#1A7A48', '#6B35A8', '#C
 
 interface StoriesBarProps {
   posts: Post[]
-  read: Set<string>
+  isRead: (post: Post) => boolean
   onRead: (id: string) => void
 }
 
-function StoriesBar({ posts, read, onRead }: StoriesBarProps) {
+function StoriesBar({ posts, isRead, onRead }: StoriesBarProps) {
   const navigate = useNavigate()
   const location = useLocation()
   // index within each author's posts that we'll navigate to next
@@ -233,13 +268,13 @@ function StoriesBar({ posts, read, onRead }: StoriesBarProps) {
 
   // Only show authors with at least one unread post
   const visible = [...authorMap.entries()].filter(([, { posts: ps }]) =>
-    ps.some(p => !read.has(p.id))
+    ps.some(p => !isRead(p))
   )
 
   if (visible.length === 0) return null
 
   const handleClick = (authorId: string, ps: Post[]) => {
-    const unread = ps.filter(p => !read.has(p.id))
+    const unread = ps.filter(p => !isRead(p))
     if (unread.length === 0) return
     const idx = cursor[authorId] ?? 0
     const target = unread[idx % unread.length]
@@ -256,7 +291,7 @@ function StoriesBar({ posts, read, onRead }: StoriesBarProps) {
       <div className="flex gap-4 items-flex-start w-max">
         <AnimatePresence initial={false}>
           {visible.map(([authorId, { name, avatar, color, posts: ps }]) => {
-            const unreadCount = ps.filter(p => !read.has(p.id)).length
+            const unreadCount = ps.filter(p => !isRead(p)).length
             const initials = initialsOf(name)
             return (
               <motion.div
@@ -367,7 +402,14 @@ function Sidebar({ user, posts, onTagClick, onEventsMore }: SidebarProps) {
   const location = useLocation()
 
   return (
-    <div className="hidden lg:flex flex-col w-64 gap-4 pt-[62px] flex-shrink-0">
+    // Sticky so the tiles stay put and only the feed column scrolls. The
+    // parent flex row is items-start, which is what lets sticky work here.
+    // top clears the 56px app header; max-height keeps a long sidebar
+    // scrollable rather than clipped.
+    <div
+      className="hidden lg:flex flex-col w-64 gap-4 mt-[62px] flex-shrink-0 self-start sticky overflow-y-auto"
+      style={{ top: 70, maxHeight: 'calc(100dvh - 90px)', scrollbarWidth: 'none' }}
+    >
 
       {/* Profile widget */}
       <div className="rounded-2xl overflow-hidden" style={{ background: '#FFFDF7', border: '1px solid #E4D4B8' }}>
@@ -504,11 +546,13 @@ interface FeedProps {
 export default function Feed({ searchQuery = '', onCompose, onEventsMore }: FeedProps) {
   const [viewMode, setViewMode] = useState<string>('scroll')
   const [activeFilter, setActiveFilter] = useState<string>('all')
+  // '' = 全社 (all branches)
+  const [activeBranch, setActiveBranch] = useState<string>('')
   const [searchParams, setSearchParams] = useSearchParams()
   const tagFilter = searchParams.get('tag') ?? ''
   const queryClient = useQueryClient()
   const { user } = useAuth()
-  const { read, markRead } = useReadPosts()
+  const { isRead, markRead } = useReadPosts()
   const { events: monthlyEvents, loaded: eventsLoaded } = useMonthlyEvents()
   const navigate = useNavigate()
   const location = useLocation()
@@ -520,12 +564,13 @@ export default function Feed({ searchQuery = '', onCompose, onEventsMore }: Feed
   // the same cached pages so switching between them makes zero network requests.
   // StoriesBar and read-state also derive from this same in-memory array.
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery<PostsPage, Error, { pages: PostsPage[] }, string[], PageCursor | null>({
-    queryKey: ['posts', searchQuery, activeFilter, tagFilter],
+    queryKey: ['posts', searchQuery, activeFilter, activeBranch, tagFilter],
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams()
       if (pageParam)    { params.set('cursor_created_at', pageParam.created_at); params.set('cursor_id', pageParam.id) }
       if (searchQuery)  params.set('q', searchQuery)
-      if (activeFilter !== 'all') params.set('type', activeFilter)
+      if (activeFilter !== 'all') params.set('category', activeFilter)
+      if (activeBranch) params.set('branch', activeBranch)
       if (tagFilter)    params.set('tag', tagFilter)
       return api.get(`/posts?${params}`)
     },
@@ -638,6 +683,9 @@ export default function Feed({ searchQuery = '', onCompose, onEventsMore }: Feed
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: 'easeOut' }}
         >
+          <div className="flex items-center gap-3 mb-3">
+            <BranchSelect value={activeBranch} onChange={setActiveBranch} />
+          </div>
           <FilterChips active={activeFilter} onChange={setActiveFilter} />
         </motion.div>
 
@@ -698,7 +746,7 @@ export default function Feed({ searchQuery = '', onCompose, onEventsMore }: Feed
             <motion.div
               key="skeleton"
               exit={{ opacity: 0, transition: { duration: 0.15 } }}
-              className="max-w-[500px] mx-auto"
+              className="w-full"
             >
               {[0, 1, 2].map(i => <PostCardSkeleton key={i} />)}
             </motion.div>
@@ -723,28 +771,14 @@ export default function Feed({ searchQuery = '', onCompose, onEventsMore }: Feed
           {/* ── Scroll view ── */}
           {!isLoading && posts.length > 0 && viewMode === 'scroll' && (
             <motion.div key={`scroll-${searchQuery}-${activeFilter}`}>
-              <motion.div
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.22, ease: 'easeOut' }}
-              >
-                <StoriesBar posts={posts} read={read} onRead={markRead} />
+              <motion.div variants={pageFade} initial="hidden" animate="show">
+                <StoriesBar posts={posts} isRead={isRead} onRead={markRead} />
               </motion.div>
-              <div className="max-w-[500px] mx-auto">
-                {posts.map((post: Post, i: number) => (
-                  <motion.div
-                    key={post.id}
-                    initial={{ opacity: 0, y: 16 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8, transition: { duration: 0.1 } }}
-                    transition={{
-                      duration: 0.28,
-                      delay: Math.min((i % 8) * 0.055, 0.35),
-                      ease: [0.25, 0.46, 0.45, 0.94],
-                    }}
-                  >
+              <div className="w-full kb-list">
+                {posts.map((post: Post) => (
+                  <div key={post.id}>
                     <PostCard post={post} viewMode="scroll" onRead={markRead} />
-                  </motion.div>
+                  </div>
                 ))}
               </div>
             </motion.div>
@@ -752,23 +786,13 @@ export default function Feed({ searchQuery = '', onCompose, onEventsMore }: Feed
 
           {/* ── Board view ── */}
           {!isLoading && posts.length > 0 && viewMode === 'board' && (
-            <motion.div key={`board-${searchQuery}-${activeFilter}`} className="grid grid-cols-2 gap-3">
-              {posts.map((post: Post, i: number) => (
-                <motion.div
-                  key={post.id}
-                  initial={{ opacity: 0, scale: 0.96, y: 10 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, transition: { duration: 0.1 } }}
-                  transition={{
-                    duration: 0.24,
-                    delay: Math.min((i % 8) * 0.045, 0.3),
-                    ease: [0.25, 0.46, 0.45, 0.94],
-                  }}
-                >
+            <div key={`board-${searchQuery}-${activeFilter}`} className="grid grid-cols-2 gap-3 kb-grid">
+              {posts.map((post: Post) => (
+                <div key={post.id}>
                   <PostCard post={post} viewMode="board" onRead={markRead} />
-                </motion.div>
+                </div>
               ))}
-            </motion.div>
+            </div>
           )}
 
         </AnimatePresence>
@@ -777,7 +801,7 @@ export default function Feed({ searchQuery = '', onCompose, onEventsMore }: Feed
         <div ref={sentinelRef} />
 
         {isFetchingNextPage && (
-          <div className="max-w-[500px] mx-auto">
+          <div className="w-full">
             <PostCardSkeleton />
           </div>
         )}

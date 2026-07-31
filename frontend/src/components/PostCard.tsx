@@ -8,31 +8,41 @@ import { stripMarkdown } from '../lib/markdown'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
-import { postTypeMeta, initials as initialsOf, patchPostCaches, useAddComment } from '../lib/postMeta'
+import { categoryChipStyle, initials as initialsOf, patchPostCaches, useAddComment } from '../lib/postMeta'
 import CommentsPanel from './CommentsPanel'
+import PostThumbnail from './PostThumbnail'
 import ViewersModal from './ViewersModal'
 import { UserHoverCard } from './UserHoverCard'
 
 // Lazy — keeps tiptap out of the main bundle (only loads when editing)
 const PostComposer = lazy(() => import('./PostComposer'))
 import { colorFor } from '../lib/colors'
-import type { Post, Attachment } from '../types'
+import { attachmentUrl, type Post, type Attachment } from '../types'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-interface TypeBadgeProps {
-  type: string
-}
-
-function TypeBadge({ type }: TypeBadgeProps) {
-  const { bg, color, label } = postTypeMeta(type)
+/** A post's categories, rendered as chips. Replaced the single type badge —
+ *  a post can now carry several, so this renders 0..N. */
+function CategoryBadges({ post, max = 2 }: { post: Post; max?: number }) {
+  const cats = post.categories ?? []
+  if (cats.length === 0) return null
   return (
-    <span
-      className="text-[9.5px] font-extrabold px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0"
-      style={{ background: bg, color }}
-    >
-      {label}
-    </span>
+    <>
+      {cats.slice(0, max).map(c => (
+        <span
+          key={c.id}
+          className="text-[9.5px] font-extrabold px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0"
+          style={categoryChipStyle(c.color)}
+        >
+          {c.name}
+        </span>
+      ))}
+      {cats.length > max && (
+        <span className="text-[9.5px] font-bold flex-shrink-0" style={{ color: '#A8906E' }}>
+          +{cats.length - max}
+        </span>
+      )}
+    </>
   )
 }
 
@@ -138,9 +148,15 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
       staleTime: 30_000,
     })
   }
-  const [liked, setLiked] = useState<boolean>(post.liked_by_me)
-  const [likesCount, setLikesCount] = useState<number>(Number(post.likes_count))
-  const [bookmarked, setBookmarked] = useState<boolean>(post.is_bookmarked_by_me ?? false)
+  // Derived from the cache, NOT copied into state. These used to be useState
+  // seeded from props, which never resynced — so an SSE like/unlike or any
+  // refetch updated the cache while the card kept rendering its stale copy,
+  // and the value only corrected on remount. That is the "count changes then
+  // jumps back" behaviour. The mutations below patch the cache optimistically,
+  // so reading straight from props is still instant.
+  const liked = post.liked_by_me
+  const likesCount = Number(post.likes_count)
+  const bookmarked = post.is_bookmarked_by_me ?? false
   const [commentsOpen, setCommentsOpen] = useState<boolean>(false)
   const [commentDraft, setCommentDraft] = useState<string>('')
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
@@ -188,23 +204,27 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
 
   // Mark as read after 1.5s dwell in viewport
   useEffect(() => {
-    if (!onRead) return
+    if (!onRead || post.viewed_by_me) return
     const el = cardRef.current
     if (!el) return
     let timer: ReturnType<typeof setTimeout> | null = null
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
-          timer = setTimeout(() => onRead(post.id), 1500)
-        } else {
-          if (timer) clearTimeout(timer)
+          timer = setTimeout(() => { onRead(post.id); observer.disconnect() }, 1500)
+        } else if (timer) {
+          clearTimeout(timer)
+          timer = null
         }
       },
-      { threshold: 0.6 }
+      // Centre band of the viewport rather than a share of the card: a
+      // scroll-view card can be taller than the screen, and an
+      // intersectionRatio threshold can never be reached in that case.
+      { rootMargin: '-30% 0px -30% 0px' }
     )
     observer.observe(el)
     return () => { observer.disconnect(); if (timer) clearTimeout(timer) }
-  }, [post.id, onRead])
+  }, [post.id, post.viewed_by_me, onRead])
 
   useEffect(() => {
     if (!menuOpen) return
@@ -246,16 +266,11 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
       void queryClient.cancelQueries({ queryKey: ['posts'] })
       const prevLiked = liked
       const prevCount = likesCount
-      const nextCount = next ? prevCount + 1 : prevCount - 1
-      setLiked(next)
-      setLikesCount(nextCount)
-      patchFeedLike(next, nextCount)
+      patchFeedLike(next, next ? prevCount + 1 : prevCount - 1)
       return { prevLiked, prevCount }
     },
     onError: (_err, _next, ctx) => {
       if (!ctx) return
-      setLiked(ctx.prevLiked)
-      setLikesCount(ctx.prevCount)
       patchFeedLike(ctx.prevLiked, ctx.prevCount)
       toast.error('いいねに失敗しました')
     },
@@ -271,9 +286,11 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
     mutationFn: (save: boolean) => save
       ? api.post(`/bookmarks/${post.id}`)
       : api.delete(`/bookmarks/${post.id}`),
-    onMutate: (save) => setBookmarked(save),
+    onMutate: (save: boolean) => {
+      patchPostCaches(queryClient, post.id, p => ({ ...p, is_bookmarked_by_me: save }))
+    },
     onError: (_err, save) => {
-      setBookmarked(!save)
+      patchPostCaches(queryClient, post.id, p => ({ ...p, is_bookmarked_by_me: !save }))
       toast.error('保存に失敗しました')
     },
     onSettled: () => {
@@ -334,6 +351,7 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
   if (viewMode === 'scroll') {
     return (
       <div
+        ref={cardRef}
         className="mb-3.5 overflow-hidden"
         style={{ background: '#FFFDF7', border: '1px solid #E4D4B8', borderRadius: 12, contain: 'layout', touchAction: 'pan-y' }}
         onMouseEnter={prefetchDetail}
@@ -362,7 +380,7 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
               <span className="text-[16px] font-extrabold leading-none">{new Date(post.event_date).getDate()}</span>
             </div>
           )}
-          <TypeBadge type={post.post_type} />
+          <CategoryBadges post={post} max={1} />
           <div className="relative ml-1" ref={menuRef}>
             <button
               onClick={(e) => { e.stopPropagation(); setMenuOpen(o => !o) }}
@@ -456,31 +474,17 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
             )}
           </div>
         ) : (
-          <div
+          <PostThumbnail
+            title={editedPost.title}
+            tags={editedPost.tags}
+            postType={post.post_type}
+            emoji={editedPost.thumbnail_emoji}
+            background={editedPost.thumb_background}
+            textColor={editedPost.thumb_text_color}
+            pattern={editedPost.thumb_pattern}
             onClick={() => goToPost()}
-            className="w-full flex items-center justify-center px-6 py-7 cursor-pointer"
-            style={{
-              minHeight: 240,
-              background: 'linear-gradient(145deg, #FAF5EC 0%, #FDE8D0 100%)',
-              borderTop: '1px solid #E4D4B8',
-              borderBottom: '1px solid #E4D4B8',
-            }}
-          >
-            <div className="text-center max-w-[300px]">
-              <TypeBadge type={post.post_type} />
-              <h3
-                className="font-extrabold text-brand-dark mt-3.5 mb-2.5 leading-snug"
-                style={{ fontSize: 21, letterSpacing: '-0.4px' }}
-              >
-                {editedPost.title}
-              </h3>
-              {editedPost.tags.length > 0 && (
-                <div className="text-[12.5px] font-semibold" style={{ color: '#E8732A' }}>
-                  {editedPost.tags.slice(0, 3).map(t => `#${t}`).join('  ')}
-                </div>
-              )}
-            </div>
-          </div>
+            style={{ borderTop: '1px solid #E4D4B8', borderBottom: '1px solid #E4D4B8' }}
+          />
         )}
 
         {/* Action bar */}
@@ -614,7 +618,7 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
         {fileAttachments.map(a => (
           <a
             key={a.id}
-            href={a.drive_url}
+            href={attachmentUrl(a, true)}
             target="_blank"
             rel="noopener noreferrer"
             className="mx-3.5 mb-2 flex items-center gap-2.5 px-3 py-2 rounded-xl text-[12px] font-semibold text-brand-dark"
@@ -698,7 +702,7 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
       ref={cardRef}
       onClick={handleCardClick}
       onMouseEnter={prefetchDetail}
-      className="relative flex flex-col gap-2.5 cursor-pointer transition-shadow duration-200 hover:shadow-lg"
+      className="relative flex flex-col gap-2.5 cursor-pointer transition-shadow duration-200 hover:shadow-lg overflow-hidden"
       style={{
         background: '#FFFDF7',
         border: '1px solid #E4D4B8',
@@ -706,6 +710,29 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
         padding: '18px',
       }}
     >
+      {/* Design accent. The board is a dense grid, so the post's thumbnail is
+          reduced to a slim band rather than shown full-size like the feed —
+          the same colour language, without every tile competing for attention.
+          Falls back to the first category's colour when no design is set. */}
+      {(editedPost.thumb_background || editedPost.categories?.[0]) && (
+        <div
+          className="absolute top-0 left-0 right-0 pointer-events-none flex items-center justify-center"
+          style={{
+            height: 40,
+            background: editedPost.thumb_background
+              ?? `linear-gradient(135deg, ${editedPost.categories[0].color}, ${editedPost.categories[0].color}99)`,
+            // Fades into the card so it reads as an accent, not a header block
+            maskImage: 'linear-gradient(to bottom, #000 35%, transparent 100%)',
+            WebkitMaskImage: 'linear-gradient(to bottom, #000 35%, transparent 100%)',
+            opacity: 0.55,
+          }}
+        >
+          {editedPost.thumbnail_emoji && (
+            <span style={{ fontSize: 15, lineHeight: 1, opacity: 0.9 }}>{editedPost.thumbnail_emoji}</span>
+          )}
+        </div>
+      )}
+
       {/* Double-tap heart burst */}
       <AnimatePresence>
         {showHeart && (
@@ -751,7 +778,7 @@ export default function PostCard({ post, viewMode, onRead }: PostCardProps) {
 
       {/* Badges */}
       <div className="flex flex-wrap gap-1.5">
-        <TypeBadge type={post.post_type} />
+        <CategoryBadges post={post} max={2} />
         {editedPost.tags.map(t => (
           <span key={t} onClick={(e) => { e.stopPropagation(); navigate(`/?tag=${encodeURIComponent(t)}`) }} className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded-full cursor-pointer hover:opacity-70 transition-opacity" style={{ background: '#F0E8D8', color: '#7A5C30' }}>#{t}</span>
         ))}
